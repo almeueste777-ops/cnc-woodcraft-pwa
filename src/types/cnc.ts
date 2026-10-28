@@ -26,7 +26,9 @@ export interface ImageProcessingOptions {
   frameWidthMm: number      // Lățime ramă exterioară
 
   // --- Algoritm Avansat de Sculptură 3D pentru Icoane (Smart Icon Relief) ---
-  reliefMode: 'smartIcon' | 'standard' | 'photo'
+  // depthmap = imaginea/modelul ESTE deja hartă de adâncime (STL, depth map AI, heightmap cumpărat)
+  reliefMode: 'smartIcon' | 'standard' | 'photo' | 'depthmap'
+  mirrorX?: boolean             // oglindire stânga-dreapta (matrițe, piese pereche)
   macroDomeVolume: number       // 0 - 100: Bombare organică a corpului și feței (Cushion)
   microDetailStrength: number   // 0 - 100: Forța gravării liniilor fine (veșminte, barbă, ochi)
   antiHoleProtection: number    // 0 - 100: Protecție împotriva gropilor în zonele negre (păr, ochi)

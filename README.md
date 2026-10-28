@@ -47,19 +47,40 @@ Aplicație profesională **Progressive Web App (PWA)** dedicată sculpturii în 
   - **Export .SVG**: Pentru grafică vectorială, Inkscape, LightBurn, LaserGRBL.
   - **Export .DXF (AutoCAD R12)**: Standardul industrial recunoscut de toate mașinile CNC și laserele de pe piață.
 
-### 6. ⚙️ Generator G-Code & Monitorizare Execuție
-- **Sculptură 3D de Relief**:
-  - Traseu raster X/Y (zig-zag) optimizat cu freză sferică (*Ball-nose*), cilindrică (*Endmill*) sau gravor (*V-bit*).
-  - Reglaj pas lateral (*Stepover* 8-15%), viteză de avans lucru (mm/min), viteză coborâre Z (*plunge*), Z de siguranță și turație (*RPM*).
-  - Estimare precisă a timpului de lucru (ore și minute) și distanței totale parcurse.
-- **Gravură Vectorială 2D/2.5D & Laser**:
-  - Urmărire traseu vectori la adâncime reglabilă sau mod Laser PWM (`M3/M4 S1000`).
-- **Panou de Comandă Jogging & Terminal**:
-  - Butoane deplasare X, Y, Z (pas reglabil: 0.1mm, 1mm, 10mm, 50mm).
-  - Setare Origine Lucru `X0 Y0 Z0` (`G10 L20 P1`).
-  - Homing (`$H`) și Deblocare Alarmă (`$X`).
-  - **Buton Roșu STOP DE URGENȚĂ (E-STOP)** cu oprire instantanee.
-  - Streaming linie cu linie cu bară de progres, pauză și reluare.
+### 6. ⚙️ Motor CAM (src/cam) — ca la softurile premium
+- **Compensarea sculei (drop-cutter)** pentru freză sferică, dreaptă și V-bit: flancurile frezei nu taie în relief.
+  Lângă pereți abrupți (nimb, ramă) traseul e rafinat adaptiv până la 0.01 mm.
+- **Degroșare pe niveluri Z** cu freză dreaptă, pas Z reglabil și **adaos 3D** lăsat pentru finisare.
+- **Finisare 3D**: raster pe X, pe Y sau încrucișat X+Y.
+- **Bibliotecă de scule** (frezele uzuale pentru lemn, cu avansuri/turații de pornire), editabile.
+- **Simulare de frezare**: vezi în 3D cum iese piesa din lemn (inclusiv urmele frezei) înainte să pornești mașina.
+- **Origine XY** (stânga-jos / centru / stânga-sus) și **Z0** (fața lemnului sau masa mașinii).
+- Calculul rulează în fundal (Web Worker), cu bară de progres și anulare; timp estimat pe fiecare traseu.
+
+### 7. 🖥️ Post-procesoare (G-code pentru orice controler)
+GRBL, FluidNC/grblHAL, Mach3/Mach4 (.tap), LinuxCNC (.ngc), UCCNC, Marlin, RichAuto DSP A11/A18,
+Weihong NcStudio / NK105 / Syntec, ISO generic cu numere de linie. Fiecare cu stilul lui de comentarii,
+pauză, schimbare de sculă (M6) sau **câte un fișier pe freză** (GRBL, Marlin, DSP-uri), fără diacritice în fișier.
+
+### 8. 📂 Intrări și proiecte
+- Orice imagine (JPG, PNG, WebP, BMP, SVG), **model 3D STL** (binar/ASCII, convertit la precizie float) sau
+  hartă de adâncime gata făcută (modul „Model 3D / Adâncime”). Fișierele se pot trage direct peste aplicație.
+- Oglindire, inversare (matrițe), netezire reglabilă.
+- **Salvare / deschidere proiect** (.json cu imaginea, parametrii piesei și ai mașinii).
+
+### 9. 🔌 Control CNC Direct
+- Streaming rapid cu **numărare de caractere** pe GRBL (ca UGS/Candle), linie cu linie pe Marlin.
+- **La eroare trimiterea se oprește** (nu continuă orbește); la ALARM lucrarea se anulează.
+- **Stop real**: feed hold + reset (GRBL) / M410 (Marlin) — mașina se oprește, nu doar lista din aplicație.
+- Poziție de lucru corectă pe GRBL 1.1 (MPos − WCO), jog, origine, homing, deblocare, E-STOP.
+- Gravură laser GRBL (M4 cu putere dinamică).
+
+### Verificare motor CAM
+```
+npx tsx tests/cam-check.ts
+```
+Verifică exact (pe segmente, la 0.05 mm) că nicio poziție a frezei nu intră în relieful final, că degroșarea
+nu plonjează mai mult de un pas Z și că G-code-ul e valid pentru fiecare post-procesor.
 
 ---
 

@@ -1,4 +1,5 @@
 import type { ImageProcessingOptions } from '../types/cnc'
+import type { DepthSource } from './modelImport'
 
 /**
  * Motor profesional de procesare a imaginii pentru Basorelief & Icoane 3D
@@ -8,7 +9,8 @@ import type { ImageProcessingOptions } from '../types/cnc'
  */
 export function processImageHeightmap(
   sourceCanvas: HTMLCanvasElement,
-  options: ImageProcessingOptions
+  options: ImageProcessingOptions,
+  depthSource: DepthSource | null = null
 ): {
   processedCanvas: HTMLCanvasElement
   heightmapData: Float32Array
@@ -41,7 +43,16 @@ export function processImageHeightmap(
 
   let finalRelief: Float32Array
 
-  if (options.reliefMode === 'smartIcon') {
+  if (options.reliefMode === 'depthmap') {
+    // =========================================================================
+    // HARTĂ DE ADÂNCIME DIRECTĂ (model STL, depth map, heightmap gata făcut)
+    // Înălțimile se folosesc exact; netezirea opțională scoate treptele de 8 biți.
+    // =========================================================================
+    const useDepth = depthSource && depthSource.width === width && depthSource.height === height
+    let base: Float32Array = useDepth ? depthSource!.data.slice() : rawLuminance.map((v: number) => v / 255)
+    if (options.blurRadius > 0) base = applySeparableBlur(base, width, height, options.blurRadius)
+    finalRelief = base
+  } else if (options.reliefMode === 'smartIcon') {
     // =========================================================================
     // MODUL SMART ICON SCULPTOR (Algoritm Multi-Scară pentru Icoane)
     // =========================================================================
@@ -160,6 +171,10 @@ export function processImageHeightmap(
 
   const frameBorderX = (options.frameWidthMm / Math.max(1, options.widthMm)) * width
   const frameBorderY = (options.frameWidthMm / Math.max(1, options.heightMm)) * height
+
+  if (options.mirrorX) {
+    for (let y = 0; y < height; y++) finalRelief.subarray(y * width, (y + 1) * width).reverse()
+  }
 
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {

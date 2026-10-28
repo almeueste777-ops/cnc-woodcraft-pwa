@@ -12,34 +12,40 @@ interface ImageControlsProps {
   options: ImageProcessingOptions
   onOptionsChange: (newOptions: ImageProcessingOptions) => void
   onLoadPresetIcon: (type: 'virginMary' | 'christ' | 'cross') => void
-  onImageUploaded: (image: HTMLImageElement) => void
+  onFileSelected: (file: File) => void
 }
 
 export const ImageControls: React.FC<ImageControlsProps> = ({
   options,
   onOptionsChange,
   onLoadPresetIcon,
-  onImageUploaded
+  onFileSelected
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
-    if (!file) return
-
-    const reader = new FileReader()
-    reader.onload = (event) => {
-      const img = new Image()
-      img.onload = () => {
-        onImageUploaded(img)
-      }
-      img.src = event.target?.result as string
-    }
-    reader.readAsDataURL(file)
+    if (file) onFileSelected(file)
+    e.target.value = '' // permite reîncărcarea aceluiași fișier
   }
 
   const applyPreset = (presetName: string) => {
     switch (presetName) {
+      case 'depthmap':
+        onOptionsChange({
+          ...options,
+          reliefMode: 'depthmap',
+          blurRadius: 1,
+          edgeSharpen: 0,
+          haloBoost: 0,
+          contrast: 100,
+          brightness: 0,
+          gamma: 1.0,
+          invert: false,
+          frameStyle: 'none',
+          frameWidthMm: 0
+        })
+        break
       case 'icon_deep':
         onOptionsChange({
           ...options,
@@ -116,12 +122,12 @@ export const ImageControls: React.FC<ImageControlsProps> = ({
         <div className="flex items-center justify-between mb-2">
           <span className="text-xs font-bold uppercase tracking-wider text-amber-500 flex items-center gap-1.5">
             <Upload className="w-4 h-4" />
-            Imagine Sursă (Icoane / Orice Poză)
+            Imagine Sursă (Poză, Hartă Adâncime sau STL)
           </span>
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/*"
+            accept="image/*,.stl,model/stl"
             className="hidden"
             onChange={handleFileChange}
           />
@@ -130,9 +136,12 @@ export const ImageControls: React.FC<ImageControlsProps> = ({
             className="text-xs bg-amber-600 hover:bg-amber-500 text-white font-bold px-3 py-1.5 rounded-lg transition shadow-md flex items-center gap-1.5"
           >
             <Upload className="w-3.5 h-3.5" />
-            Încarcă Poză
+            Încarcă Fișier
           </button>
         </div>
+        <p className="text-[10px] text-stone-500 mb-2">
+          JPG, PNG, WebP, BMP, SVG sau model 3D .STL — ori trageți fișierul oriunde peste aplicație.
+        </p>
 
         {/* Mostre Icoane Imediate */}
         <div className="bg-[#141312] p-2.5 rounded-xl border border-[#2e2a24] flex flex-col gap-1.5">
@@ -168,11 +177,11 @@ export const ImageControls: React.FC<ImageControlsProps> = ({
             Motor Sculptură 3D (Relief Engine)
           </span>
           <span className="text-[10px] bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded border border-amber-500/30 font-bold uppercase">
-            {options.reliefMode === 'smartIcon' ? 'Multi-Scară Icoane' : 'Standard'}
+            {{ smartIcon: 'Multi-Scară Icoane', standard: 'Standard', photo: 'Fotogravură', depthmap: 'Adâncime Exactă' }[options.reliefMode]}
           </span>
         </div>
 
-        <div className="grid grid-cols-3 gap-1.5 text-xs">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 text-xs">
           <button
             onClick={() => applyPreset('icon_deep')}
             className={`p-2 rounded-lg border text-left transition ${
@@ -207,6 +216,18 @@ export const ImageControls: React.FC<ImageControlsProps> = ({
           >
             <div className="text-[11px]">Fotogravură</div>
             <div className="text-[9px] opacity-80">Detalii de suprafață</div>
+          </button>
+
+          <button
+            onClick={() => applyPreset('depthmap')}
+            className={`p-2 rounded-lg border text-left transition ${
+              options.reliefMode === 'depthmap'
+                ? 'bg-amber-600 text-white font-bold border-amber-500 shadow-md'
+                : 'bg-[#201d19] text-stone-300 border-[#383228] hover:bg-[#2a2620]'
+            }`}
+          >
+            <div className="text-[11px]">Model 3D / Adâncime</div>
+            <div className="text-[9px] opacity-80">STL, hartă gri exactă</div>
           </button>
         </div>
       </div>
@@ -397,7 +418,24 @@ export const ImageControls: React.FC<ImageControlsProps> = ({
           </div>
         </div>
 
-        {/* Inversare Relief */}
+        {/* Netezire */}
+        <div className="flex flex-col gap-1">
+          <div className="flex justify-between text-xs">
+            <span className="text-stone-300">Netezire suprafață (anti-zgomot / anti-trepte):</span>
+            <span className="text-amber-400 font-mono">{options.blurRadius} px</span>
+          </div>
+          <input
+            type="range"
+            min="0"
+            max="8"
+            step="1"
+            value={options.blurRadius}
+            onChange={(e) => onOptionsChange({ ...options, blurRadius: Number(e.target.value) })}
+            className="accent-amber-500 cursor-pointer"
+          />
+        </div>
+
+        {/* Inversare / Oglindire */}
         <label className="flex items-center gap-2 cursor-pointer text-xs text-stone-300 select-none">
           <input
             type="checkbox"
@@ -405,7 +443,16 @@ export const ImageControls: React.FC<ImageControlsProps> = ({
             onChange={(e) => onOptionsChange({ ...options, invert: e.target.checked })}
             className="w-4 h-4 rounded accent-amber-500"
           />
-          <span>Inversează Adâncimea (Luminos = Adâncit)</span>
+          <span>Inversează Adâncimea (Luminos = Adâncit, pt. matrițe)</span>
+        </label>
+        <label className="flex items-center gap-2 cursor-pointer text-xs text-stone-300 select-none">
+          <input
+            type="checkbox"
+            checked={!!options.mirrorX}
+            onChange={(e) => onOptionsChange({ ...options, mirrorX: e.target.checked })}
+            className="w-4 h-4 rounded accent-amber-500"
+          />
+          <span>Oglindește stânga-dreapta</span>
         </label>
       </div>
 
