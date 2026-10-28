@@ -1,8 +1,10 @@
 import type { ImageProcessingOptions } from '../types/cnc'
 
 /**
- * Procesează imaginea sursă și produce un ImageData normalizat (0-255 nivel de gri)
- * gata de folosit ca hartă de adâncime (Heightmap) pentru sculptură 3D sau gravură.
+ * Motor profesional de procesare a imaginii pentru Basorelief & Icoane 3D
+ * Transformă orice imagine într-o hartă de relief (Heightmap) fără deformări,
+ * prevenind „gropile” din zonele întunecate (barbă, ochi, veșminte) și
+ * creând un volum organic convex pe care se gravează detaliile fine.
  */
 export function processImageHeightmap(
   sourceCanvas: HTMLCanvasElement,
@@ -20,92 +22,171 @@ export function processImageHeightmap(
   outputCanvas.width = width
   outputCanvas.height = height
   const ctx = outputCanvas.getContext('2d', { willReadFrequently: true })!
-  
+
   ctx.drawImage(sourceCanvas, 0, 0)
   const imgData = ctx.getImageData(0, 0, width, height)
   const pixels = imgData.data
 
   const totalPixels = width * height
-  let rawGrayscale: any = new Float32Array(totalPixels)
+  const rawLuminance: any = new Float32Array(totalPixels)
 
-  // 1. Conversie la gri perceptual (Luminance)
+  // 1. Extragere luminanță perceptuală (Rec. 709)
   for (let i = 0; i < totalPixels; i++) {
     const idx = i * 4
     const r = pixels[idx]
     const g = pixels[idx + 1]
     const b = pixels[idx + 2]
-    // Perceptual luminance formula Rec. 709
-    const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
-    rawGrayscale[i] = lum
+    rawLuminance[i] = 0.2126 * r + 0.7152 * g + 0.0722 * b
   }
 
-  // 2. Netezire Gaussian / Box blur pentru a elimina pixelarea lemnului
-  if (options.blurRadius > 0) {
-    rawGrayscale = applySeparableBlur(rawGrayscale, width, height, options.blurRadius)
+  let finalRelief: Float32Array
+
+  if (options.reliefMode === 'smartIcon') {
+    // =========================================================================
+    // MODUL SMART ICON SCULPTOR (Algoritm Multi-Scară pentru Icoane)
+    // =========================================================================
+
+    // A. Extragere Volum Convex de Bază (Macro Dome Cushion - Frecvențe Joase)
+    // Folosim o netezire largă pentru a crea „perna” organică a corpului și nimbului
+    const wideRadius = Math.max(12, Math.round(width * 0.045))
+    const macroDome = applySeparableBlur(rawLuminance, width, height, wideRadius)
+
+    // B. Extragere Detalii Fine de Suprafață (Micro Detail - Frecvențe Înalte)
+    // Netezire fină locală pentru a elimina doar zgomotul de senzor/jpeg
+    const fineSmooth = applySeparableBlur(rawLuminance, width, height, Math.max(1, options.blurRadius))
+    
+    // Gradient Sobel pentru detecția liniilor sculptate (falduri veșminte, barbă, ochi)
+    const edgeMag = computeSobelMagnitude(fineSmooth, width, height)
+
+    // C. Protecție împotriva „gropilor” în trăsăturile negre (Anti-Hole Protection)
+    // În icoane: barba, pletele, pupilele și veșmintele vișinii sunt negre/închise la culoare.
+    // În loc să se scufunde într-o groapă, ridicăm nivelul de bază și adăugăm crestele firelor de păr.
+    const antiHoleFactor = options.antiHoleProtection / 100 // 0 la 1
+    const domeWeight = options.macroDomeVolume / 100       // Forța pernei de volum
+    const detailWeight = (options.microDetailStrength / 100) * 1.6
+
+    finalRelief = new Float32Array(totalPixels)
+
+    // Centru estimat pentru nimb și chip (partea superioară centrală)
+    const haloCx = width * 0.5
+    const haloCy = height * 0.35
+    const haloRadiusMax = Math.min(width, height) * 0.38
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = y * width + x
+        const rawLum = fineSmooth[i] / 255.0
+        const baseDomeNorm = macroDome[i] / 255.0
+        const edge = edgeMag[i] / 255.0
+
+        // 1. Calcul volum convex de bază:
+        // Distanța față de centrul icoanei (crează o curbură eliptică frumoasă spre privitor)
+        const dx = (x - haloCx) / (width * 0.5)
+        const dy = (y - height * 0.5) / (height * 0.5)
+        const distCenterSq = dx * dx + dy * dy
+        const anatomicalCushion = Math.max(0, 1.0 - Math.min(1.0, distCenterSq * 0.6))
+
+        // 2. Corecție zone întunecate: dacă lumina este mică, dar există contururi (barbă, veșmânt),
+        // nu lăsăm adâncimea să cadă sub nivelul anatomic de bază!
+        let correctedLuma = rawLum
+        if (antiHoleFactor > 0) {
+          const darkDeficit = Math.max(0, 0.55 - rawLum)
+          // Înlocuim groapa cu relief pozitiv bazat pe volumul pernei și contururile muchiilor
+          correctedLuma = rawLum + darkDeficit * antiHoleFactor * (0.7 + edge * 0.8)
+        }
+
+        // 3. Îmbinare multi-scară: Volum Macro + Detalii Gravate
+        let heightVal =
+          baseDomeNorm * 0.35 * domeWeight +
+          anatomicalCushion * 0.35 * domeWeight +
+          correctedLuma * 0.35 +
+          edge * detailWeight * 0.35
+
+        // 4. Boost Nimb / Aureolă Sfântă cu ramă circulară în trepte
+        if (options.haloBoost > 0) {
+          const hdx = x - haloCx
+          const hdy = y - haloCy
+          const hDist = Math.hypot(hdx, hdy)
+          if (hDist < haloRadiusMax) {
+            const haloNorm = 1.0 - (hDist / haloRadiusMax)
+            // Platou nimb ridicat
+            const haloLift = Math.pow(Math.max(0, haloNorm), 0.5) * (options.haloBoost / 140)
+            // Ramă exterioară perlată a nimbului (muchie accentuată pe margine)
+            const ringDist = Math.abs(hDist - haloRadiusMax * 0.9)
+            const ringBead = ringDist < 6 ? (1.0 - ringDist / 6) * 0.15 : 0
+
+            heightVal = Math.min(1.0, heightVal + haloLift + ringBead)
+          }
+        }
+
+        // 5. Curățare și coborâre fundal (Separare Subiect - Fundal Lemn)
+        if (options.bgSeparationLevel > 0) {
+          const bgThreshold = 0.22 * (options.bgSeparationLevel / 100)
+          if (baseDomeNorm < bgThreshold && distCenterSq > 0.6) {
+            const drop = (bgThreshold - baseDomeNorm) / bgThreshold
+            heightVal *= Math.max(0, 1.0 - drop * 0.9)
+          }
+        }
+
+        finalRelief[i] = Math.max(0, Math.min(1.0, heightVal))
+      }
+    }
+
+    // Netezire fină anti-zgârieturi (elimină vârfurile de pixel izolate)
+    finalRelief = applyLaplacianAntiSpike(finalRelief, width, height)
+
+  } else {
+    // =========================================================================
+    // MODUL STANDARD / FOTO
+    // =========================================================================
+    let smoothed = rawLuminance
+    if (options.blurRadius > 0) {
+      smoothed = applySeparableBlur(rawLuminance, width, height, options.blurRadius)
+    }
+    if (options.edgeSharpen > 0) {
+      smoothed = applySharpen(smoothed, rawLuminance, width, height, options.edgeSharpen / 50)
+    }
+
+    finalRelief = new Float32Array(totalPixels)
+    for (let i = 0; i < totalPixels; i++) {
+      finalRelief[i] = Math.max(0, Math.min(1.0, smoothed[i] / 255.0))
+    }
   }
 
-  // 3. Accentuare contururi (Unsharp Mask) dacă e activat
-  if (options.edgeSharpen > 0) {
-    rawGrayscale = applySharpen(rawGrayscale, rawGrayscale, width, height, options.edgeSharpen / 50)
-  }
-
-  const smoothed = rawGrayscale
-
-  // 4. Transformări de contrast, luminozitate și gamma
-  const contrastFactor = options.contrast / 100 // 1.0 = normal
-  const brightnessOffset = options.brightness // -100 to 100
+  // 4. Aplicare Contrast, Luminozitate și Gamma pe tot modelul
+  const contrastFactor = options.contrast / 100
+  const brightnessOffset = options.brightness / 255
   const gamma = Math.max(0.1, options.gamma)
 
-  // 5. Aplicare ramă sau arcadă (boltă de icoană)
   const frameBorderX = (options.frameWidthMm / Math.max(1, options.widthMm)) * width
   const frameBorderY = (options.frameWidthMm / Math.max(1, options.heightMm)) * height
 
-  const heightmap = new Float32Array(totalPixels)
-
   for (let y = 0; y < height; y++) {
-    const ny = y / height // 0 la 1
     for (let x = 0; x < width; x++) {
-      const nx = x / width // 0 la 1
       const i = y * width + x
-      let val = smoothed[i]
+      let val = finalRelief[i]
 
-      // Contrast & Brightness
-      val = (val - 128) * contrastFactor + 128 + brightnessOffset
-      val = Math.max(0, Math.min(255, val))
+      // Contrast și Luminozitate
+      val = (val - 0.5) * contrastFactor + 0.5 + brightnessOffset
+      val = Math.max(0, Math.min(1.0, val))
 
-      // Gamma correction: normalizeaza 0-1, aplica exponent, readu la 0-1
-      let norm = val / 255.0
-      norm = Math.pow(norm, 1 / gamma)
+      // Curbă Gamma
+      val = Math.pow(val, 1 / gamma)
 
-      // Halo Boost pentru Icoane (ridică nimbul sfinților)
-      if (options.haloBoost > 0) {
-        // Presupunem centrul aureolei în treimea superioară
-        const haloCenterX = 0.5
-        const haloCenterY = 0.35
-        const dx = (nx - haloCenterX) * (width / height)
-        const dy = ny - haloCenterY
-        const dist = Math.sqrt(dx * dx + dy * dy)
-        // Daca distanta este in raza nimbului (aprox 0.15 - 0.28)
-        if (dist > 0.12 && dist < 0.28) {
-          const ringStrength = Math.sin(((dist - 0.12) / 0.16) * Math.PI)
-          norm = Math.min(1.0, norm + ringStrength * (options.haloBoost / 150))
-        }
-      }
-
-      // Inversare dacă albul este adâncit sau ieșit
+      // Inversare dacă albul este adâncit
       if (options.invert) {
-        norm = 1.0 - norm
+        val = 1.0 - val
       }
 
-      // Ramă decorativă / Arcadă icoană
+      // Ramă sau Arcadă Bizantină (Boltă de Icoană)
       if (options.frameStyle !== 'none' && options.frameWidthMm > 0) {
-        norm = applyFrameProfile(norm, x, y, width, height, frameBorderX, frameBorderY, options.frameStyle)
+        val = applyFrameProfile(val, x, y, width, height, frameBorderX, frameBorderY, options.frameStyle)
       }
 
-      heightmap[i] = Math.max(0, Math.min(1, norm))
+      finalRelief[i] = Math.max(0, Math.min(1.0, val))
 
-      // Re-scriem în ImageData pentru canvas
-      const displayVal = Math.round(heightmap[i] * 255)
+      // Actualizare pixeli pe canvas pentru vizualizare 2D
+      const displayVal = Math.round(finalRelief[i] * 255)
       const pIdx = i * 4
       pixels[pIdx] = displayVal
       pixels[pIdx + 1] = displayVal
@@ -118,60 +199,58 @@ export function processImageHeightmap(
 
   return {
     processedCanvas: outputCanvas,
-    heightmapData: heightmap,
+    heightmapData: finalRelief,
     width,
     height
   }
 }
 
 /**
- * Aplică profilul de ramă pe margini (ex. ramă simplă cu profil convex sau arcadă de icoană)
+ * Filtru Sobel pentru calculul magnitudinii muchiilor (contururi falduri și trăsături)
  */
-function applyFrameProfile(
-  originalNorm: number,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-  borderX: number,
-  borderY: number,
-  style: 'simple' | 'arch' | 'ornate'
-): number {
-  const distLeft = x
-  const distRight = w - 1 - x
-  const distBottom = h - 1 - y
-  let distTop = y
+function computeSobelMagnitude(src: Float32Array, w: number, h: number): Float32Array {
+  const out = new Float32Array(w * h)
+  for (let y = 1; y < h - 1; y++) {
+    const rowPrev = (y - 1) * w
+    const rowCur = y * w
+    const rowNext = (y + 1) * w
+    for (let x = 1; x < w - 1; x++) {
+      const p00 = src[rowPrev + x - 1]
+      const p01 = src[rowPrev + x]
+      const p02 = src[rowPrev + x + 1]
+      const p10 = src[rowCur + x - 1]
+      const p12 = src[rowCur + x + 1]
+      const p20 = src[rowNext + x - 1]
+      const p21 = src[rowNext + x]
+      const p22 = src[rowNext + x + 1]
 
-  // Pentru arcada de icoană: curbă la partea superioară
-  if (style === 'arch') {
-    const cx = w / 2
-    const archRadius = w * 0.48
-    const dx = Math.abs(x - cx)
-    if (dx < archRadius && y < h * 0.4) {
-      const archY = (h * 0.35) - Math.sqrt(Math.max(0, archRadius * archRadius - dx * dx)) * 0.7
-      if (archY > 0) {
-        distTop = Math.max(0, y - archY)
+      const gx = -p00 + p02 - 2 * p10 + 2 * p12 - p20 + p22
+      const gy = -p00 - 2 * p01 - p02 + p20 + 2 * p21 + p22
+      out[rowCur + x] = Math.min(255, Math.hypot(gx, gy) * 0.7)
+    }
+  }
+  return out
+}
+
+/**
+ * Elimină vârfurile de ac (Needle Spikes) cauzate de compresia JPEG pentru o frezare lină
+ */
+function applyLaplacianAntiSpike(src: Float32Array, w: number, h: number): Float32Array {
+  const out = new Float32Array(src.length)
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x
+      const center = src[i]
+      const avgNeighbors = (src[i - 1] + src[i + 1] + src[i - w] + src[i + w]) * 0.25
+      // Dacă pixelul este un spike izolat exagerat, îl limităm
+      if (center - avgNeighbors > 0.08) {
+        out[i] = avgNeighbors + 0.04
+      } else {
+        out[i] = center
       }
     }
   }
-
-  const minBorderDist = Math.min(distLeft / borderX, distRight / borderX, distBottom / borderY, distTop / borderY)
-
-  if (minBorderDist < 1.0) {
-    // Suntem în zona ramei: generăm un profil de ramură lemn clasic
-    const t = Math.max(0, minBorderDist)
-    let frameElevation = 0
-    if (style === 'ornate') {
-      // Profil triplu canelat clasic de icoană bizantină
-      frameElevation = 0.5 + 0.5 * Math.sin(t * Math.PI * 2.5) * Math.sin(t * Math.PI * 0.5)
-    } else {
-      // Profil rotunjit sfert de cerc (cove/roundover)
-      frameElevation = Math.sin(t * Math.PI * 0.5)
-    }
-    return Math.max(originalNorm * t, frameElevation * 0.85 + 0.15 * originalNorm)
-  }
-
-  return originalNorm
+  return out
 }
 
 /**
@@ -188,7 +267,6 @@ function applySeparableBlur(src: Float32Array, w: number, h: number, radius: num
   for (let y = 0; y < h; y++) {
     const rowOffset = y * w
     let sum = 0
-    // Init sum
     for (let k = -r; k <= r; k++) {
       const px = Math.min(Math.max(k, 0), w - 1)
       sum += src[rowOffset + px]
@@ -236,49 +314,47 @@ function applySharpen(smoothed: Float32Array, original: Float32Array, _w: number
 }
 
 /**
- * Dithering Floyd-Steinberg pentru gravură foto laser/mecanică
+ * Profil ramă sau arcadă bizantină
  */
-export function floydSteinbergDither(canvas: HTMLCanvasElement): HTMLCanvasElement {
-  const w = canvas.width
-  const h = canvas.height
-  const output = document.createElement('canvas')
-  output.width = w
-  output.height = h
-  const ctx = output.getContext('2d')!
-  ctx.drawImage(canvas, 0, 0)
-  const imgData = ctx.getImageData(0, 0, w, h)
-  const d = imgData.data
+function applyFrameProfile(
+  originalNorm: number,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  borderX: number,
+  borderY: number,
+  style: 'simple' | 'arch' | 'ornate'
+): number {
+  const distLeft = x
+  const distRight = w - 1 - x
+  const distBottom = h - 1 - y
+  let distTop = y
 
-  const gray = new Float32Array(w * h)
-  for (let i = 0; i < w * h; i++) {
-    const idx = i * 4
-    gray[i] = 0.299 * d[idx] + 0.587 * d[idx + 1] + 0.114 * d[idx + 2]
-  }
-
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const i = y * w + x
-      const oldPixel = gray[i]
-      const newPixel = oldPixel < 128 ? 0 : 255
-      gray[i] = newPixel
-      const err = oldPixel - newPixel
-
-      if (x + 1 < w) gray[i + 1] += (err * 7) / 16
-      if (x - 1 >= 0 && y + 1 < h) gray[i + w - 1] += (err * 3) / 16
-      if (y + 1 < h) gray[i + w] += (err * 5) / 16
-      if (x + 1 < w && y + 1 < h) gray[i + w + 1] += (err * 1) / 16
+  if (style === 'arch') {
+    const cx = w / 2
+    const archRadius = w * 0.48
+    const dx = Math.abs(x - cx)
+    if (dx < archRadius && y < h * 0.4) {
+      const archY = (h * 0.35) - Math.sqrt(Math.max(0, archRadius * archRadius - dx * dx)) * 0.7
+      if (archY > 0) {
+        distTop = Math.max(0, y - archY)
+      }
     }
   }
 
-  for (let i = 0; i < w * h; i++) {
-    const val = Math.max(0, Math.min(255, gray[i]))
-    const idx = i * 4
-    d[idx] = val
-    d[idx + 1] = val
-    d[idx + 2] = val
-    d[idx + 3] = 255
+  const minBorderDist = Math.min(distLeft / borderX, distRight / borderX, distBottom / borderY, distTop / borderY)
+
+  if (minBorderDist < 1.0) {
+    const t = Math.max(0, minBorderDist)
+    let frameElevation = 0
+    if (style === 'ornate') {
+      frameElevation = 0.5 + 0.5 * Math.sin(t * Math.PI * 2.5) * Math.sin(t * Math.PI * 0.5)
+    } else {
+      frameElevation = Math.sin(t * Math.PI * 0.5)
+    }
+    return Math.max(originalNorm * t, frameElevation * 0.85 + 0.15 * originalNorm)
   }
 
-  ctx.putImageData(imgData, 0, 0)
-  return output
+  return originalNorm
 }

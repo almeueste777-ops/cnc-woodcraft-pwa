@@ -1,21 +1,37 @@
 export type AppMode = 'relief3d' | 'engrave2d' | 'controller' | 'tutorials' | 'export'
 
-export type WoodTextureType = 'lime' | 'oak' | 'walnut' | 'cherry' | 'wireframe'
+export type WoodTextureType =
+  | 'lime'      // Lemn de Tei (Culoare caldă tradițională de icoană)
+  | 'oak'       // Stejar nobil (Fibră evidentă)
+  | 'walnut'    // Nuc închis (Luxos)
+  | 'cherry'    // Cireș roșcat
+  | 'topo'      // Hartă Termică Înălțimi (Topo / False Color pentru verificare adâncimi)
+  | 'gold'      // Aur Bizantin Patinat (Inspecție Icoană)
+  | 'studio'    // Lumină Razantă Gri Mat (Inspecție umbre și relief sculptură)
+  | 'wireframe' // Rețea de triunghiuri STL
 
 export interface ImageProcessingOptions {
   widthMm: number           // Dimensiune fizică pe X (mm)
   heightMm: number          // Dimensiune fizică pe Y (mm)
   maxDepthMm: number        // Adâncime maximă sculptură (mm, ex: 15mm)
   baseThicknessMm: number   // Grosime bază lemn suport (mm, ex: 5mm)
-  invert: boolean           // Negativ / Pozitiv (înnegrit = adânc sau ieșit în relief)
+  invert: boolean           // Negativ / Pozitiv
   contrast: number          // 0 - 200
   brightness: number        // -100 - 100
   gamma: number             // 0.2 - 3.0
-  blurRadius: number        // Netezire lemn (pentru a elimina zgomotul de pixeli la frezare)
-  edgeSharpen: number       // Accentuare contururi fine (cute veșminte, barbă, ochi)
+  blurRadius: number        // Netezire generală lemn
+  edgeSharpen: number       // Accentuare contururi
   haloBoost: number         // Ridicare nimb / aură icoană (0 - 100)
   frameStyle: 'none' | 'simple' | 'arch' | 'ornate' // Ramă clasică sau arcadă/boltă de icoană
   frameWidthMm: number      // Lățime ramă exterioară
+
+  // --- Algoritm Avansat de Sculptură 3D pentru Icoane (Smart Icon Relief) ---
+  reliefMode: 'smartIcon' | 'standard' | 'photo'
+  macroDomeVolume: number       // 0 - 100: Bombare organică a corpului și feței (Cushion)
+  microDetailStrength: number   // 0 - 100: Forța gravării liniilor fine (veșminte, barbă, ochi)
+  antiHoleProtection: number    // 0 - 100: Protecție împotriva gropilor în zonele negre (păr, ochi)
+  bgSeparationLevel: number     // 0 - 100: Nivel coborâre fundal lemn (Curățare fundal)
+  facialSmoothing: number       // 0 - 100: Netezire chip fără trepte aspre
 }
 
 export type ToolType = 'ballnose' | 'endmill' | 'vbit' | 'laser'

@@ -60,7 +60,7 @@ export function App() {
     setTimeout(() => setToastMessage(null), 3500)
   }
 
-  // Opțiuni prelucrare imagine (implicit pentru icoane pe lemn)
+  // Opțiuni prelucrare imagine (implicit optimizate pentru icoane pe lemn)
   const [imageOptions, setImageOptions] = useState<ImageProcessingOptions>({
     widthMm: 200,
     heightMm: 280,
@@ -74,7 +74,13 @@ export function App() {
     edgeSharpen: 45,
     haloBoost: 55,
     frameStyle: 'arch',
-    frameWidthMm: 16
+    frameWidthMm: 16,
+    reliefMode: 'smartIcon',
+    macroDomeVolume: 75,
+    microDetailStrength: 65,
+    antiHoleProtection: 85,
+    bgSeparationLevel: 70,
+    facialSmoothing: 60
   })
 
   // Parametri sculă & prelucrare CNC

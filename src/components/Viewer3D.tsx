@@ -2,7 +2,14 @@ import React, { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import type { WoodTextureType } from '../types/cnc'
 import type { MeshResult } from '../utils/meshGenerator'
-import { Box, Eye, Layers, SunMedium, Download } from 'lucide-react'
+import {
+  Box,
+  Eye,
+  Layers,
+  SunMedium,
+  Download,
+  Gauge
+} from 'lucide-react'
 
 interface Viewer3DProps {
   meshResult: MeshResult | null
@@ -25,46 +32,100 @@ export const Viewer3D: React.FC<Viewer3DProps> = ({
   const dirLightRef = useRef<THREE.DirectionalLight | null>(null)
 
   const [lightAngle, setLightAngle] = useState(45)
+  const [hoverDepthMm, setHoverDepthMm] = useState<number | null>(null)
+  const [showToolpathSimulation, setShowToolpathSimulation] = useState(false)
+  const toolpathLinesRef = useRef<THREE.LineSegments | null>(null)
 
-  // Creare textură procedurală realistă de lemn
-  const createWoodTexture = (type: WoodTextureType): THREE.CanvasTexture => {
+  // Creare textură procedurală fotorealistă sau hartă termică (Topo)
+  const createTexture = (type: WoodTextureType): THREE.Texture => {
     const canvas = document.createElement('canvas')
     canvas.width = 512
     canvas.height = 512
     const ctx = canvas.getContext('2d')!
 
-    let baseColor = '#e8d8b8' // Tei (Basswood) - tradițional pentru icoane
-    let ringColor = '#c4b08c'
+    if (type === 'topo') {
+      // Hartă termică de înălțimi (False Color Topography: Albastru -> Cyan -> Verde -> Galben -> Roșu)
+      const grad = ctx.createLinearGradient(0, 512, 0, 0)
+      grad.addColorStop(0.0, '#1e1b4b') // Adâncime maximă (Mov închis)
+      grad.addColorStop(0.25, '#0284c7') // Albastru
+      grad.addColorStop(0.5, '#10b981') // Verde mediu
+      grad.addColorStop(0.75, '#f59e0b') // Galben / Portocaliu
+      grad.addColorStop(1.0, '#ef4444') // Suprafață maximă Z0 (Roșu)
+      ctx.fillStyle = grad
+      ctx.fillRect(0, 0, 512, 512)
+
+      // Izolinii / Curbe de nivel de atelier
+      ctx.strokeStyle = '#ffffff'
+      ctx.globalAlpha = 0.25
+      ctx.lineWidth = 1.5
+      for (let y = 16; y < 512; y += 24) {
+        ctx.beginPath()
+        ctx.moveTo(0, y)
+        ctx.lineTo(512, y)
+        ctx.stroke()
+      }
+
+      const tex = new THREE.CanvasTexture(canvas)
+      return tex
+    }
+
+    if (type === 'gold') {
+      // Aur Bizantin Patinat
+      const grad = ctx.createLinearGradient(0, 0, 512, 512)
+      grad.addColorStop(0.0, '#d97706')
+      grad.addColorStop(0.5, '#fef08a')
+      grad.addColorStop(1.0, '#78350f')
+      ctx.fillStyle = grad
+      ctx.fillRect(0, 0, 512, 512)
+
+      ctx.fillStyle = '#451a03'
+      ctx.globalAlpha = 0.15
+      for (let i = 0; i < 300; i++) {
+        ctx.fillRect(Math.random() * 512, Math.random() * 512, 2, 2)
+      }
+      return new THREE.CanvasTexture(canvas)
+    }
+
+    if (type === 'studio') {
+      // Gri Studio de laborator pentru inspecția precisă a umbrelor
+      ctx.fillStyle = '#b0b0b0'
+      ctx.fillRect(0, 0, 512, 512)
+      return new THREE.CanvasTexture(canvas)
+    }
+
+    // Esențe de lemn
+    let baseColor = '#eadecc' // Tei (Basswood) - foarte luminos, fin
+    let ringColor = '#c7b496'
 
     if (type === 'oak') {
-      baseColor = '#c9a063'
-      ringColor = '#8c6835'
+      baseColor = '#c29759'
+      ringColor = '#7a5523'
     } else if (type === 'walnut') {
-      baseColor = '#5c4033'
-      ringColor = '#3b2820'
+      baseColor = '#4a3327'
+      ringColor = '#2d1d15'
     } else if (type === 'cherry') {
-      baseColor = '#ab5b42'
-      ringColor = '#733723'
+      baseColor = '#9e4e37'
+      ringColor = '#662615'
     }
 
     ctx.fillStyle = baseColor
     ctx.fillRect(0, 0, 512, 512)
 
-    // Fibre de lemn longitudinale
+    // Fibre fine paralele
     ctx.fillStyle = ringColor
-    ctx.globalAlpha = 0.18
-    for (let i = 0; i < 500; i++) {
+    ctx.globalAlpha = 0.16
+    for (let i = 0; i < 600; i++) {
       const y = Math.random() * 512
-      const h = 1 + Math.random() * 3
+      const h = 1 + Math.random() * 2.5
       ctx.fillRect(0, y, 512, h)
     }
 
-    // Inele anuale subtile
-    ctx.globalAlpha = 0.08
-    for (let r = 20; r < 600; r += 14) {
+    // Inele anuale moi
+    ctx.globalAlpha = 0.07
+    for (let r = 20; r < 700; r += 16) {
       ctx.beginPath()
-      ctx.arc(256, 700, r, 0, Math.PI * 2)
-      ctx.lineWidth = 4
+      ctx.arc(256, 800, r, 0, Math.PI * 2)
+      ctx.lineWidth = 3
       ctx.strokeStyle = ringColor
       ctx.stroke()
     }
@@ -72,11 +133,11 @@ export const Viewer3D: React.FC<Viewer3DProps> = ({
     const texture = new THREE.CanvasTexture(canvas)
     texture.wrapS = THREE.RepeatWrapping
     texture.wrapT = THREE.RepeatWrapping
-    texture.repeat.set(2, 2)
+    texture.repeat.set(1.5, 1.5)
     return texture
   }
 
-  // Inițializare Three.js
+  // Inițializare Scenă Three.js
   useEffect(() => {
     if (!mountRef.current) return
 
@@ -85,11 +146,11 @@ export const Viewer3D: React.FC<Viewer3DProps> = ({
     const height = container.clientHeight
 
     const scene = new THREE.Scene()
-    scene.background = new THREE.Color(0x1a1918)
+    scene.background = new THREE.Color(0x131211)
     sceneRef.current = scene
 
-    const camera = new THREE.PerspectiveCamera(45, width / height, 1, 3000)
-    camera.position.set(0, -280, 260)
+    const camera = new THREE.PerspectiveCamera(40, width / height, 1, 4000)
+    camera.position.set(0, -290, 260)
     camera.lookAt(0, 0, 0)
     cameraRef.current = camera
 
@@ -97,34 +158,40 @@ export const Viewer3D: React.FC<Viewer3DProps> = ({
     renderer.setSize(width, height)
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     renderer.shadowMap.enabled = true
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap
     container.innerHTML = ''
     container.appendChild(renderer.domElement)
     rendererRef.current = renderer
 
-    // Lumini
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6)
+    // Lumini profesionale de studio
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.65)
     scene.add(ambientLight)
 
-    const dirLight = new THREE.DirectionalLight(0xfff6e6, 1.8)
-    dirLight.position.set(150, -150, 300)
+    // Lumină principală (Key light) cu umbră dinamică
+    const dirLight = new THREE.DirectionalLight(0xfffaed, 2.0)
+    dirLight.position.set(160, -180, 280)
+    dirLight.castShadow = true
+    dirLight.shadow.mapSize.width = 2048
+    dirLight.shadow.mapSize.height = 2048
     scene.add(dirLight)
     dirLightRef.current = dirLight
 
-    const fillLight = new THREE.DirectionalLight(0xaaccff, 0.5)
-    fillLight.position.set(-150, 150, 100)
+    // Lumină de umplere rece (Rim / Fill light)
+    const fillLight = new THREE.DirectionalLight(0x94b4e0, 0.45)
+    fillLight.position.set(-160, 180, 150)
     scene.add(fillLight)
 
-    // Grilă suport
-    const grid = new THREE.GridHelper(500, 25, 0x444444, 0x2a2a2a)
+    // Grilă de bază
+    const grid = new THREE.GridHelper(500, 25, 0x443e35, 0x24201b)
     grid.rotation.x = Math.PI / 2
     grid.position.z = -0.5
     scene.add(grid)
 
-    // Control rotire cu mouse / touch
+    // Interacțiune Mouse / Touch (Rotire & Zoom)
     let isDragging = false
     let prevMouseX = 0
     let prevMouseY = 0
-    let rotX = 0.3
+    let rotX = 0.35
     let rotZ = 0
 
     const onPointerDown = (e: PointerEvent) => {
@@ -140,12 +207,17 @@ export const Viewer3D: React.FC<Viewer3DProps> = ({
       prevMouseX = e.clientX
       prevMouseY = e.clientY
 
-      rotZ += deltaX * 0.01
-      rotX += deltaY * 0.01
-      rotX = Math.max(-1.2, Math.min(1.2, rotX))
+      rotZ += deltaX * 0.009
+      rotX += deltaY * 0.009
+      rotX = Math.max(-1.3, Math.min(1.3, rotX))
 
       meshRef.current.rotation.z = rotZ
       meshRef.current.rotation.x = rotX
+
+      if (toolpathLinesRef.current) {
+        toolpathLinesRef.current.rotation.z = rotZ
+        toolpathLinesRef.current.rotation.x = rotX
+      }
     }
 
     const onPointerUp = () => { isDragging = false }
@@ -153,8 +225,8 @@ export const Viewer3D: React.FC<Viewer3DProps> = ({
     const onWheel = (e: WheelEvent) => {
       e.preventDefault()
       camera.position.z += e.deltaY * 0.3
-      camera.position.z = Math.max(80, Math.min(800, camera.position.z))
-      camera.position.y = -camera.position.z * 1.1
+      camera.position.z = Math.max(70, Math.min(800, camera.position.z))
+      camera.position.y = -camera.position.z * 1.15
       camera.lookAt(0, 0, 0)
     }
 
@@ -164,7 +236,29 @@ export const Viewer3D: React.FC<Viewer3DProps> = ({
     window.addEventListener('pointerup', onPointerUp)
     dom.addEventListener('wheel', onWheel, { passive: false })
 
-    // Loop randare
+    // Raycaster pentru citire adâncime la hover (Inspector)
+    const raycaster = new THREE.Raycaster()
+    const mouse = new THREE.Vector2()
+
+    const onHoverInspect = (e: MouseEvent) => {
+      if (!meshRef.current || isDragging) return
+      const rect = dom.getBoundingClientRect()
+      mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1
+      mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1
+
+      raycaster.setFromCamera(mouse, camera)
+      const hits = raycaster.intersectObject(meshRef.current)
+      if (hits.length > 0) {
+        // Z local al modelului
+        const localPoint = hits[0].point.clone().applyMatrix4(meshRef.current.matrixWorld.clone().invert())
+        setHoverDepthMm(Math.round(localPoint.z * 10) / 10)
+      } else {
+        setHoverDepthMm(null)
+      }
+    }
+    dom.addEventListener('mousemove', onHoverInspect)
+
+    // Buclă de animație
     let animId: number
     const animate = () => {
       animId = requestAnimationFrame(animate)
@@ -172,7 +266,6 @@ export const Viewer3D: React.FC<Viewer3DProps> = ({
     }
     animate()
 
-    // Resize
     const onResize = () => {
       if (!container) return
       const w = container.clientWidth
@@ -189,12 +282,13 @@ export const Viewer3D: React.FC<Viewer3DProps> = ({
       window.removeEventListener('pointermove', onPointerMove)
       window.removeEventListener('pointerup', onPointerUp)
       dom.removeEventListener('wheel', onWheel)
+      dom.removeEventListener('mousemove', onHoverInspect)
       window.removeEventListener('resize', onResize)
       renderer.dispose()
     }
   }, [])
 
-  // Actualizare Mesh la schimbarea modelului sau texturii de lemn
+  // Actualizare Mesh & Material la schimbarea geometriei sau modului de vizualizare
   useEffect(() => {
     if (!sceneRef.current || !meshResult) return
 
@@ -213,14 +307,27 @@ export const Viewer3D: React.FC<Viewer3DProps> = ({
 
     if (woodType === 'wireframe') {
       material = new THREE.MeshStandardMaterial({
-        color: 0xe6a23c,
+        color: 0xf59e0b,
         wireframe: true
       })
-    } else {
-      const woodTex = createWoodTexture(woodType)
+    } else if (woodType === 'gold') {
+      const goldTex = createTexture('gold')
       material = new THREE.MeshStandardMaterial({
-        map: woodTex,
-        roughness: 0.55,
+        map: goldTex,
+        metalness: 0.85,
+        roughness: 0.28
+      })
+    } else if (woodType === 'studio') {
+      material = new THREE.MeshStandardMaterial({
+        color: 0xcccccc,
+        roughness: 0.7,
+        metalness: 0.05
+      })
+    } else {
+      const tex = createTexture(woodType)
+      material = new THREE.MeshStandardMaterial({
+        map: tex,
+        roughness: woodType === 'topo' ? 0.3 : 0.5,
         metalness: 0.08,
         flatShading: false
       })
@@ -231,61 +338,108 @@ export const Viewer3D: React.FC<Viewer3DProps> = ({
     mesh.receiveShadow = true
     sceneRef.current.add(mesh)
     meshRef.current = mesh
-  }, [meshResult, woodType])
 
-  // Ajustare unghi lumină pentru evidențiere relief
+    // Simulare trasee sculă de frezare (Toolpaths)
+    if (toolpathLinesRef.current) {
+      sceneRef.current.remove(toolpathLinesRef.current)
+      toolpathLinesRef.current = null
+    }
+
+    if (showToolpathSimulation) {
+      const linesGeo = generateToolpathLinesGeometry(meshResult)
+      const linesMat = new THREE.LineBasicMaterial({ color: 0x38bdf8, opacity: 0.55, transparent: true })
+      const lines = new THREE.LineSegments(linesGeo, linesMat)
+      sceneRef.current.add(lines)
+      toolpathLinesRef.current = lines
+    }
+  }, [meshResult, woodType, showToolpathSimulation])
+
+  // Ajustare unghi de iluminare
   useEffect(() => {
     if (!dirLightRef.current) return
     const rad = (lightAngle * Math.PI) / 180
-    dirLightRef.current.position.set(Math.cos(rad) * 220, Math.sin(rad) * 220, 250)
+    dirLightRef.current.position.set(Math.cos(rad) * 240, Math.sin(rad) * 240, 280)
   }, [lightAngle])
 
   return (
-    <div className="relative w-full h-full min-h-[420px] bg-[#141312] rounded-xl overflow-hidden border border-[#2f2b26] flex flex-col">
-      {/* 3D Canvas Mount */}
+    <div className="relative w-full h-full min-h-[460px] bg-[#141312] rounded-xl overflow-hidden border border-[#2f2b26] flex flex-col shadow-2xl">
+      {/* 3D Viewport */}
       <div ref={mountRef} className="flex-1 w-full h-full cursor-grab active:cursor-grabbing" />
 
-      {/* Bară de control 3D suprapusă */}
+      {/* Bară de Sus: Selector Esențe Lemn & Moduri Vizualizare */}
       <div className="absolute top-3 left-3 right-3 flex flex-wrap items-center justify-between gap-2 pointer-events-none">
-        {/* Selector Esență Lemn */}
-        <div className="flex items-center gap-1 bg-[#1e1c19]/90 backdrop-blur-md p-1.5 rounded-lg border border-[#3b3630] pointer-events-auto shadow-lg">
+        <div className="flex flex-wrap items-center gap-1 bg-[#1a1815]/95 backdrop-blur-md p-1.5 rounded-xl border border-[#3b3630] pointer-events-auto shadow-2xl">
           <Layers className="w-4 h-4 text-amber-500 ml-1 mr-1" />
           <button
             onClick={() => onWoodTypeChange('lime')}
-            className={`px-2.5 py-1 text-xs font-medium rounded-md transition ${woodType === 'lime' ? 'bg-amber-600 text-white font-bold' : 'text-stone-300 hover:bg-[#2e2a24]'}`}
-            title="Lemn de Tei - Culoare deschisă, tradițional pentru sculptură de icoane"
+            className={`px-2.5 py-1 text-xs font-bold rounded-lg transition ${woodType === 'lime' ? 'bg-amber-600 text-white shadow' : 'text-stone-300 hover:bg-[#2b2721]'}`}
+            title="Lemn de Tei - Esența nobilă a icoanelor bizantine"
           >
             Tei (Icoane)
           </button>
           <button
             onClick={() => onWoodTypeChange('oak')}
-            className={`px-2.5 py-1 text-xs font-medium rounded-md transition ${woodType === 'oak' ? 'bg-amber-600 text-white font-bold' : 'text-stone-300 hover:bg-[#2e2a24]'}`}
-            title="Lemn de Stejar - Fibruos cu textură maronie"
+            className={`px-2.5 py-1 text-xs font-bold rounded-lg transition ${woodType === 'oak' ? 'bg-amber-600 text-white shadow' : 'text-stone-300 hover:bg-[#2b2721]'}`}
+            title="Stejar Nobil"
           >
             Stejar
           </button>
           <button
             onClick={() => onWoodTypeChange('walnut')}
-            className={`px-2.5 py-1 text-xs font-medium rounded-md transition ${woodType === 'walnut' ? 'bg-amber-600 text-white font-bold' : 'text-stone-300 hover:bg-[#2e2a24]'}`}
-            title="Lemn de Nuc - Maro închis nobil"
+            className={`px-2.5 py-1 text-xs font-bold rounded-lg transition ${woodType === 'walnut' ? 'bg-amber-600 text-white shadow' : 'text-stone-300 hover:bg-[#2b2721]'}`}
+            title="Lemn de Nuc Închis"
           >
             Nuc
           </button>
           <button
+            onClick={() => onWoodTypeChange('topo')}
+            className={`px-2.5 py-1 text-xs font-bold rounded-lg transition ${woodType === 'topo' ? 'bg-sky-600 text-white shadow' : 'text-sky-300 hover:bg-[#2b2721]'}`}
+            title="Hartă Termică Înălțimi (Inspectare adâncime de sculptură)"
+          >
+            Hartă Topo (Cote)
+          </button>
+          <button
+            onClick={() => onWoodTypeChange('gold')}
+            className={`px-2.5 py-1 text-xs font-bold rounded-lg transition ${woodType === 'gold' ? 'bg-amber-500 text-stone-900 font-extrabold shadow' : 'text-amber-300 hover:bg-[#2b2721]'}`}
+            title="Aur Bizantin Patinat"
+          >
+            ✨ Aur
+          </button>
+          <button
+            onClick={() => onWoodTypeChange('studio')}
+            className={`px-2.5 py-1 text-xs font-bold rounded-lg transition ${woodType === 'studio' ? 'bg-stone-600 text-white shadow' : 'text-stone-300 hover:bg-[#2b2721]'}`}
+            title="Lumină Razantă Studio (Inspecție umbre fine)"
+          >
+            Studio Gri
+          </button>
+          <button
             onClick={() => onWoodTypeChange('wireframe')}
-            className={`px-2.5 py-1 text-xs font-medium rounded-md transition ${woodType === 'wireframe' ? 'bg-amber-600 text-white font-bold' : 'text-stone-300 hover:bg-[#2e2a24]'}`}
-            title="Vedere Wireframe / Rețea de triunghiuri"
+            className={`px-2 py-1 text-xs font-medium rounded-lg transition ${woodType === 'wireframe' ? 'bg-amber-600 text-white shadow' : 'text-stone-400 hover:bg-[#2b2721]'}`}
+            title="Rețea de Triunghiuri STL"
           >
             Wireframe
           </button>
         </div>
 
-        {/* Buton Descărcare STL */}
-        <div className="pointer-events-auto">
+        {/* Buton Export STL & Toggle Trasee Sculă */}
+        <div className="flex items-center gap-2 pointer-events-auto">
+          <button
+            onClick={() => setShowToolpathSimulation(!showToolpathSimulation)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition shadow-lg ${
+              showToolpathSimulation
+                ? 'bg-sky-600 text-white border-sky-400'
+                : 'bg-[#1e1c19]/90 text-stone-300 border-[#3b3630] hover:bg-[#2b2721]'
+            }`}
+            title="Afișează traseele parcurse de freza CNC peste suprafața 3D"
+          >
+            <Gauge className="w-3.5 h-3.5 text-sky-400" />
+            Trasee Sculă
+          </button>
+
           <button
             onClick={onDownloadSTL}
             disabled={!meshResult}
-            className="flex items-center gap-2 bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-500 hover:to-amber-600 text-white px-3.5 py-1.5 rounded-lg text-xs font-bold shadow-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex items-center gap-1.5 bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-500 hover:to-amber-600 text-white px-3.5 py-1.5 rounded-xl text-xs font-extrabold shadow-xl transition disabled:opacity-50"
           >
             <Download className="w-3.5 h-3.5" />
             Export STL 3D
@@ -293,12 +447,12 @@ export const Viewer3D: React.FC<Viewer3DProps> = ({
         </div>
       </div>
 
-      {/* Control Iluminare Studio & Info model */}
+      {/* Bară de Jos: Iluminare Razantă & Inspector Cotă Z */}
       <div className="absolute bottom-3 left-3 right-3 flex items-center justify-between gap-3 pointer-events-none">
-        {/* Slider unghi umbră relief */}
-        <div className="flex items-center gap-2 bg-[#1e1c19]/90 backdrop-blur-md px-3 py-1.5 rounded-lg border border-[#3b3630] pointer-events-auto shadow-lg text-xs text-stone-300">
-          <SunMedium className="w-3.5 h-3.5 text-amber-400" />
-          <span>Iluminare relief:</span>
+        {/* Slider unghi lumină pentru umbre adânci */}
+        <div className="flex items-center gap-2 bg-[#1a1815]/95 backdrop-blur-md px-3 py-1.5 rounded-xl border border-[#3b3630] pointer-events-auto shadow-2xl text-xs text-stone-300">
+          <SunMedium className="w-4 h-4 text-amber-400" />
+          <span>Unghi Lumină Relief:</span>
           <input
             type="range"
             min="0"
@@ -309,21 +463,48 @@ export const Viewer3D: React.FC<Viewer3DProps> = ({
           />
         </div>
 
-        {/* Dimensiuni și statistici model */}
-        {meshResult && (
-          <div className="bg-[#1e1c19]/90 backdrop-blur-md px-3 py-1.5 rounded-lg border border-[#3b3630] text-xs text-stone-300 shadow-lg flex items-center gap-3">
-            <span className="flex items-center gap-1">
-              <Box className="w-3.5 h-3.5 text-amber-500" />
-              {meshResult.dimensions.x.toFixed(0)} × {meshResult.dimensions.y.toFixed(0)} × {meshResult.dimensions.z.toFixed(1)} mm
-            </span>
-            <span className="text-stone-500">|</span>
-            <span className="flex items-center gap-1">
-              <Eye className="w-3.5 h-3.5 text-stone-400" />
-              {meshResult.triangleCount.toLocaleString()} triunghiuri
-            </span>
-          </div>
-        )}
+        {/* Inspector Adâncime la Hover & Dimensiuni */}
+        <div className="flex items-center gap-2 pointer-events-auto">
+          {hoverDepthMm !== null && (
+            <div className="bg-[#121110]/95 backdrop-blur-md px-3 py-1.5 rounded-xl border border-amber-500/50 text-xs font-mono text-amber-300 shadow-xl flex items-center gap-1.5 animate-pulse">
+              <Gauge className="w-3.5 h-3.5 text-amber-400" />
+              <span>Cotă Înălțime: {hoverDepthMm.toFixed(1)} mm</span>
+            </div>
+          )}
+
+          {meshResult && (
+            <div className="bg-[#1a1815]/95 backdrop-blur-md px-3 py-1.5 rounded-xl border border-[#3b3630] text-xs text-stone-300 shadow-2xl flex items-center gap-3">
+              <span className="flex items-center gap-1 font-semibold">
+                <Box className="w-3.5 h-3.5 text-amber-500" />
+                {meshResult.dimensions.x.toFixed(0)} × {meshResult.dimensions.y.toFixed(0)} × {meshResult.dimensions.z.toFixed(1)} mm
+              </span>
+              <span className="text-stone-500">|</span>
+              <span className="flex items-center gap-1 text-stone-400">
+                <Eye className="w-3.5 h-3.5" />
+                {meshResult.triangleCount.toLocaleString()} fețe
+              </span>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )
+}
+
+/**
+ * Generează liniile de simulare ale parcursului de frezare (Raster toolpaths)
+ */
+function generateToolpathLinesGeometry(meshResult: MeshResult): THREE.BufferGeometry {
+  const linePoints: number[] = []
+  const { x: wMm, y: hMm, z: maxZ } = meshResult.dimensions
+  const stepMm = 2.5 // la fiecare 2.5mm aratam o linie de trecere
+
+  for (let y = -hMm / 2; y <= hMm / 2; y += stepMm) {
+    linePoints.push(-wMm / 2, y, maxZ + 0.5)
+    linePoints.push(wMm / 2, y, maxZ + 0.5)
+  }
+
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(linePoints, 3))
+  return geo
 }
