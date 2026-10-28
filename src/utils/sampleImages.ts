@@ -4,17 +4,21 @@
  */
 export function generateSampleIconCanvas(type: 'virginMary' | 'christ' | 'cross'): HTMLCanvasElement {
   const canvas = document.createElement('canvas')
-  canvas.width = 400
-  canvas.height = 560
+  // Rezoluție HD 800x1120 pentru suprafețe cristaline fără pixelare
+  canvas.width = 800
+  canvas.height = 1120
   const ctx = canvas.getContext('2d')!
+
+  // Scalare automată pentru rezoluție dublă
+  ctx.scale(2, 2)
 
   // Fundal întunecat de bază (sculptură adâncă)
   ctx.fillStyle = '#111111'
-  ctx.fillRect(0, 0, canvas.width, canvas.height)
+  ctx.fillRect(0, 0, 400, 560)
 
-  const w = canvas.width
-  const h = canvas.height
-  const cx = w / 2
+  const w = 400
+  const h = 560
+  const cx = 200
 
   if (type === 'cross') {
     // Cruce Tradițională sculptată în lemn cu motive solare maramureșene

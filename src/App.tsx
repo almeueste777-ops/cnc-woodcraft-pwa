@@ -126,8 +126,8 @@ export function App() {
     setProcessedCanvas(pCanvas)
     setHeightmapData(hData)
 
-    // 2. Generare Mesh 3D & STL
-    const mResult = generateReliefMesh(hData, width, height, imageOptions, 240)
+    // 2. Generare Mesh 3D & STL de înaltă definiție (fără trepte de pixel)
+    const mResult = generateReliefMesh(hData, width, height, imageOptions, 360)
     setMeshResult(mResult)
 
     // 3. Generare vectori (pentru gravură contur / export DXF/SVG)
@@ -150,11 +150,11 @@ export function App() {
     showToast(`Mostră încărcată: ${type === 'virginMary' ? 'Icoana Maicii Domnului' : type === 'christ' ? 'Icoana Mântuitorului' : 'Cruce Maramureșeană'}`)
   }
 
-  // Încărcare imagine proprie de la utilizator
+  // Încărcare imagine proprie de la utilizator cu super-rezoluție
   const handleImageUploaded = (img: HTMLImageElement) => {
     const canvas = document.createElement('canvas')
-    // Păstrăm o rezoluție optimă de lucru (ex: max 900px pe latura mare)
-    const maxDim = 900
+    // Păstrăm rezoluție Ultra-HD de până la 1600px pentru contururi de maximă finețe
+    const maxDim = 1600
     let w = img.width
     let h = img.height
     if (w > maxDim || h > maxDim) {
