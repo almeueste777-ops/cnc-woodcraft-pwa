@@ -1,4 +1,4 @@
-export type AppMode = 'relief3d' | 'engrave2d' | 'controller' | 'tutorials' | 'export'
+export type AppMode = 'relief3d' | 'engrave2d' | 'simulator' | 'controller' | 'tutorials' | 'help' | 'export'
 
 export type WoodTextureType =
   | 'lime'      // Lemn de Tei (Culoare caldă tradițională de icoană)

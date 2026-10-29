@@ -1,29 +1,25 @@
-# STARE — CNC WoodCraft Studio (actualizat 2026-10-29)
+# STARE — CNC WoodCraft Studio (actualizat 2026-10-29, seara)
 
 ## Unde suntem
-- Ramura `profesional` (necomisă, nepublicată): motor CAM nou în `src/cam/` —
-  compensare sculă (drop-cutter) cu rafinare adaptivă lângă pereți, degroșare pe niveluri cu
-  adaos 3D (grilă max-pool, nu pierde crestele înguste), finisare X/Y/încrucișat, simulare de
-  frezare în 3D, 9 post-procesoare, calcul în Web Worker.
-- Comunicare CNC (`src/utils/serialConnection.ts`) refăcută: numărare de caractere pe GRBL,
-  oprire la eroare, Stop real, WCO, GRBL 0.9, Marlin fără „?”, comenzi manuale blocate în lucrare.
-- Import STL (`src/utils/modelImport.ts`), mod „Model 3D / Adâncime”, oglindire, proiecte .json,
-  tragere fișiere peste aplicație. Bug vechi reparat: gravura vectorială ieșea răsturnată pe Y.
-- Verificat: `npx tsx tests/cam-check.ts` trece; test cap-coadă în Edge pe o icoană reală
-  (Vladimirskaya, Wikimedia): calcul 8.5 s, fișiere descărcate, CNC virtual, import STL, 0 erori.
-- Audit independent (Opus) făcut; defectele confirmate reparate.
+Publicat pe https://almeueste777-ops.github.io/cnc-woodcraft-pwa/ (ramura gh-pages, `npm run deploy`).
+- Motor CAM (`src/cam/`): drop-cutter cu rafinare adaptivă; degroșare pe niveluri cu adaos 3D;
+  finisare X/Y/încrucișat; freze sferică, dreaptă, V, conică-sferică; decupare cu punți (`cutout.ts`);
+  împărțire pe bucăți (`tiling.ts`); 9 post-procesoare.
+- Simulator real (`gcodeParser.ts`, `simulator.ts`, `components/MachineSimulator.tsx`): rulează exact
+  G-code-ul trimis; coliziuni/masă/plonjeu/în afara piesei, verificate pe fiecare mișcare întreagă.
+- Învățare și ajutor: `help/lessons.ts` (10 lecții), `help/knowledge.ts` (erori/alarme GRBL + 29 probleme),
+  `LessonsHub`, `HelpCenter`, `WorkflowGuide`, `PreflightChecklist`; alertă globală la erori de la mașină.
+- Verificat: tests/cam-check.ts și tests/sim-check.ts trec; test cap-coadă în Edge pe icoana
+  Vladimirskaya (Wikimedia): lecții, calcul, simulator, fișier extern, probleme, listă de verificare, 0 erori.
+- Două audituri independente (Opus) făcute; defectele confirmate reparate.
 
 ## Ce e deschis
-- Nepublicat pe GitHub Pages — așteaptă acordul Otiliei (commit + `npm run build` + `npm run deploy`).
-- Netestat pe o mașină fizică reală (doar simulator).
-- Freza conică (tapered ball) nu e modelată; în bibliotecă e o sferică de 0.5 mm.
-- Cu Z0 pe masă, grosimea lemnului = bază + adâncime; dacă lemnul real e mai gros, Z siguranță trebuie mărit.
-- `G4 P` pe Mach4/UCCNC poate fi în ms, după configurare.
-
-## Ce urmează (val 2 „premium”)
-V-carve adevărat și buzunărire/profil cu punți pe vectori; împărțire în plăci (tiling) pentru piese mai
-mari decât masa; freză conică; rampă la intrare în degroșare; editor de vectori.
+- Netestat pe o mașină fizică reală (doar CNC-ul virtual).
+- Textele Marlin din knowledge.ts nu sunt verificate pe sursă; FluidNC fără coduri proprii.
+- V-carve adevărat pentru text și buzunare pe vectori: nefăcute.
+- Lecțiile sunt animații în aplicație (nu fișiere video); videoclipurile YouTube externe sunt în engleză.
+- Cu Z0 pe masă, grosimea lemnului = bază + adâncime; lemn mai gros => mărește Z siguranță.
 
 ## Cum se pornește
-`start-cnc-studio.bat` sau `npm run dev` (http://localhost:5173). Test motor: `npx tsx tests/cam-check.ts`.
-Publicare: `npm run build` apoi `npm run deploy` (ramura gh-pages).
+`npm run dev` (http://localhost:5173). Teste: vezi README („Verificare motor CAM”).
+Publicare: `npm run build` apoi `npm run deploy`.

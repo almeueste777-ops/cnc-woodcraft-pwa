@@ -3,7 +3,7 @@
  * Fiecare post știe: stilul comentariilor, extensia fișierului, cum se face pauza,
  * dacă are schimbător de sculă (M6) și dacă acceptă mai multe scule într-un fișier.
  */
-import type { CamJob, PostId, Toolpath } from './types'
+import type { CamJob, CamTool, PostId, Toolpath } from './types'
 import { MOVE_PLUNGE, MOVE_RAPID } from './types'
 
 export interface PostProcessor {
@@ -160,6 +160,11 @@ export const POST_PROCESSORS: PostProcessor[] = [
   }
 ]
 
+/** Două trasee folosesc aceeași freză fizică dacă au aceeași formă și dimensiuni */
+export function toolIdentity(t: CamTool): string {
+  return `${t.shape}-${t.diameterMm}-${t.tipAngleDeg}-${t.tipDiameterMm ?? ''}`
+}
+
 export function getPost(id: PostId): PostProcessor {
   return POST_PROCESSORS.find(p => p.id === id) ?? POST_PROCESSORS[0]
 }
@@ -267,7 +272,7 @@ export function postProcess(allToolpaths: Toolpath[], job: CamJob, postId: PostI
   let currentTool: string | null = null
   toolpaths.forEach(tp => {
     const t = tp.tool
-    const toolKey = `${t.shape}-${t.diameterMm}-${t.tipAngleDeg}`
+    const toolKey = toolIdentity(t)
     w.comment(`=== ${tp.name} ===`)
 
     if (toolKey !== currentTool) {
@@ -318,6 +323,13 @@ export function postProcess(allToolpaths: Toolpath[], job: CamJob, postId: PostI
 export interface PlannedFile {
   name: string
   render: () => string // generarea textului e scumpă: se face doar la descărcare/trimitere
+  tools?: CamTool[]    // frezele din fișier, în ordine (pentru simulator și lista de verificare)
+}
+
+/** Freza pentru simulator: după numărul T (fișier combinat cu M6) sau prima a fișierului */
+export function toolForFile(file: PlannedFile, tNumber: number): CamTool | undefined {
+  const tools = file.tools ?? []
+  return tools.find(t => t.toolNumber === tNumber) ?? tools[0]
 }
 
 /** Fișierele de produs: unul combinat sau câte unul pe sculă, după post */
@@ -331,21 +343,23 @@ export function planOutputFiles(
   toolpaths = toolpaths.filter(t => t.moves.length > 0)
   if (!toolpaths.length) return []
   const post = getPost(postId)
-  const distinctTools = new Set(toolpaths.map(t => `${t.tool.shape}-${t.tool.diameterMm}-${t.tool.tipAngleDeg}`))
+  const distinctTools = new Set(toolpaths.map(t => toolIdentity(t.tool)))
   if ((post.toolChange !== 'separateFiles' && !forceSeparate) || distinctTools.size <= 1) {
-    return [{ name: `${baseName}.${post.extension}`, render: () => postProcess(toolpaths, job, postId) }]
+    const tools = toolpaths.map(t => t.tool).filter((t, i, a) => a.findIndex(x => toolIdentity(x) === toolIdentity(t)) === i)
+    return [{ name: `${baseName}.${post.extension}`, render: () => postProcess(toolpaths, job, postId), tools }]
   }
   // grupăm traseele consecutive cu aceeași sculă
   const groups: Toolpath[][] = []
   let key = ''
   for (const tp of toolpaths) {
-    const k = `${tp.tool.shape}-${tp.tool.diameterMm}-${tp.tool.tipAngleDeg}`
+    const k = toolIdentity(tp.tool)
     if (k !== key) { groups.push([]); key = k }
     groups[groups.length - 1].push(tp)
   }
   return groups.map((g, i) => ({
     name: `${baseName}_${i + 1}_${g[0].tool.shape}_D${g[0].tool.diameterMm}.${post.extension}`,
-    render: () => postProcess(g, job, postId, g.map(t => t.name).join(' + '))
+    render: () => postProcess(g, job, postId, g.map(t => t.name).join(' + ')),
+    tools: [g[0].tool]
   }))
 }
 

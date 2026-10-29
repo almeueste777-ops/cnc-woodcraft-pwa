@@ -61,7 +61,12 @@ export function sampleBicubicHeight(
 
   // Interpolare finală de-a lungul axei Y
   const val = catmullRom(col[0], col[1], col[2], col[3], fy)
-  return Math.max(0.0, Math.min(1.0, val))
+  // Catmull-Rom „sare” peste valori la treptele bruște (ramă, nimb): ar apărea creste
+  // false de până la ~1 mm. Limităm rezultatul între cei 4 pixeli vecini.
+  const a = getPixel(src, w, h, x1, y1), b = getPixel(src, w, h, x1 + 1, y1)
+  const c = getPixel(src, w, h, x1, y1 + 1), d = getPixel(src, w, h, x1 + 1, y1 + 1)
+  const lo = Math.min(a, b, c, d), hi = Math.max(a, b, c, d)
+  return Math.max(0.0, Math.min(1.0, Math.max(lo, Math.min(hi, val))))
 }
 
 /**

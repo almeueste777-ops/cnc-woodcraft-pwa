@@ -65,6 +65,7 @@ console.log(`Calcul: ${((Date.now() - t0) / 1000).toFixed(1)} s, trasee: ${out.t
 // 1. Fără gouging, verificat exact: freza pusă în fiecare punct al traseului
 //    nu are voie să intre în suprafața dorită (grilă fină 0.1 mm)
 const surf = buildSurfaceGrid(img.data, img.w, img.h, job, 0.1)
+function gougeCheck(out: ReturnType<typeof runCam>, job: CamJob) {
 // La finisare, poziția unui perete e cunoscută doar cu precizia grilei (≤ un pixel al
 // imaginii): referința e suprafața „subțiată” lateral cu o celulă de finisare.
 const fCell = finishingCell(job, img.w, img.h) * 1.5
@@ -126,6 +127,17 @@ for (const tp of out.toolpaths) {
   // nodurile grilei fine), finisarea să nu intre în relief (0.03 mm: toleranța de simplificare)
   check(worst >= allowance - (isRough ? 0.1 : 0.03),
     `${tp.name}: distanța minimă sculă–relief final ${worst.toFixed(3)} mm (adaos cerut ${allowance}) la ${where}`)
+}
+}
+gougeCheck(out, job)
+
+// 1a. Aceeași verificare pentru freza conică-sferică și V-bit, pe raster Y, doar finisare
+for (const id of ['tb05', 'vb60']) {
+  const j2: CamJob = { ...job, roughingEnabled: false, finishingTool: findTool(id), finishStrategy: 'rasterY' }
+  const t1 = Date.now()
+  const o2 = runCam({ heightmap: img.data, imgW: img.w, imgH: img.h, job: j2 })
+  console.log(`     ${j2.finishingTool.name}: ${((Date.now() - t1) / 1000).toFixed(1)} s, ${o2.toolpaths[0].stats.moveCount} mișcări`)
+  gougeCheck(o2, j2)
 }
 
 // 1b. Material rămas după toate traseele (informativ)

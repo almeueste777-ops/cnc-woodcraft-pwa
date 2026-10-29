@@ -2,6 +2,8 @@ import React from 'react'
 import type { CamJob, CamTool, PostId, Toolpath, XYOrigin } from '../cam/types'
 import { POST_PROCESSORS, getPost } from '../cam/postProcessors'
 import { TOOL_LIBRARY, findTool } from '../cam/toolLibrary'
+import { effectiveDiameter } from '../cam/engine'
+import { tileCount } from '../cam/tiling'
 import { Wrench, Clock, Play, Download, Settings2, AlertTriangle, Cpu, Loader2, X } from 'lucide-react'
 
 export interface CamRunState {
@@ -80,19 +82,23 @@ const ToolEditor: React.FC<{ tool: CamTool; onChange: (t: CamTool) => void; allo
       </select>
       <div className="grid grid-cols-3 gap-2">
         <NumField label="Diametru (mm)" value={tool.diameterMm} step={0.1} min={0.1} onChange={v => set({ diameterMm: Math.max(0.1, v) })} />
-        {tool.shape === 'vbit'
-          ? <NumField label="Unghi vârf (°)" value={tool.tipAngleDeg} min={10} max={150} onChange={v => set({ tipAngleDeg: v })} />
+        {tool.shape === 'vbit' || tool.shape === 'taperedball'
+          ? <NumField label="Unghi con inclus (°)" value={tool.tipAngleDeg} min={2} max={150} onChange={v => set({ tipAngleDeg: Math.max(2, v) })} />
           : <NumField label="Pas lateral (%)" value={tool.stepoverPercent} min={2} max={90} onChange={v => set({ stepoverPercent: Math.max(2, v) })} />}
+        {tool.shape === 'taperedball' && (
+          <NumField label="Diametru vârf (mm)" value={tool.tipDiameterMm ?? 0.5} step={0.05} min={0.05} onChange={v => set({ tipDiameterMm: Math.max(0.05, v) })} />
+        )}
         {showStepDown
           ? <NumField label="Pas Z (mm)" value={tool.stepDownMm} step={0.1} min={0.1} onChange={v => set({ stepDownMm: Math.max(0.1, v) })} />
           : <NumField label="Nr. sculă T" value={tool.toolNumber} min={1} onChange={v => set({ toolNumber: Math.max(1, Math.round(v)) })} />}
-        {tool.shape === 'vbit' && <NumField label="Pas lateral (%)" value={tool.stepoverPercent} min={2} max={90} onChange={v => set({ stepoverPercent: Math.max(2, v) })} />}
+        {(tool.shape === 'vbit' || tool.shape === 'taperedball') && <NumField label="Pas lateral (%)" value={tool.stepoverPercent} min={2} max={90} onChange={v => set({ stepoverPercent: Math.max(2, v) })} />}
         <NumField label="Avans (mm/min)" value={tool.feedRateMmMin} step={100} min={10} onChange={v => set({ feedRateMmMin: Math.max(10, v) })} />
         <NumField label="Coborâre (mm/min)" value={tool.plungeRateMmMin} step={50} min={10} onChange={v => set({ plungeRateMmMin: Math.max(10, v) })} />
         <NumField label="Turație (RPM)" value={tool.spindleRpm} step={1000} min={0} onChange={v => set({ spindleRpm: Math.max(0, v) })} />
       </div>
       <span className="text-[10px] text-stone-500">
-        Pas lateral real: {((tool.diameterMm * tool.stepoverPercent) / 100).toFixed(2)} mm
+        Pas lateral real: {((effectiveDiameter(tool) * tool.stepoverPercent) / 100).toFixed(2)} mm
+        {tool.shape === 'taperedball' && ' (din diametrul vârfului)'}
       </span>
     </div>
   )
@@ -180,6 +186,20 @@ export const CamPanel: React.FC<CamPanelProps> = props => {
         <span className="text-[10px] text-stone-500">
           Lemn: {job.widthMm} × {job.heightMm} × {job.stockThicknessMm} mm (din dimensiunile piesei). Fundul reliefului la −{job.maxDepthMm} mm.
         </span>
+        <div className="grid grid-cols-2 gap-2">
+          <NumField label="Cursa mașinii X (mm)" value={job.bedXMm ?? 0} step={10} min={0} onChange={v => setJob({ bedXMm: Math.max(0, v) })} hint="0 = nu contează" />
+          <NumField label="Cursa mașinii Y (mm)" value={job.bedYMm ?? 0} step={10} min={0} onChange={v => setJob({ bedYMm: Math.max(0, v) })} hint="ex. 3018: 300 × 180" />
+        </div>
+        {(() => {
+          const { cols, rows } = tileCount(job, job.bedXMm ?? 0, job.bedYMm ?? 0)
+          return cols * rows > 1 ? (
+            <div className="text-[11px] text-amber-200 bg-amber-950/40 border border-amber-700/50 rounded-lg p-2">
+              Piesa nu încape pe mașină: se lucrează în {cols * rows} bucăți ({cols} pe X × {rows} pe Y), fiecare de
+              {' '}{(job.widthMm / cols).toFixed(0)} × {(job.heightMm / rows).toFixed(0)} mm, cu X0 Y0 în colțul stânga-jos al bucății.
+              Trasează pe lemn liniile dintre bucăți înainte de început.
+            </div>
+          ) : null
+        })()}
       </div>
 
       {mode === 'relief3d' ? (
@@ -216,6 +236,41 @@ export const CamPanel: React.FC<CamPanelProps> = props => {
               </>
             )}
           </div>
+
+          {job.cutout && (
+            <div className={boxCls}>
+              <label className={`${titleCls} cursor-pointer`}>
+                <input type="checkbox" checked={job.cutout.enabled} onChange={e => setJob({ cutout: { ...job.cutout!, enabled: e.target.checked } })} className="accent-amber-500" />
+                3. Decupare din placă, cu punți (opțional)
+              </label>
+              {job.cutout.enabled && (
+                <>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {(['arch', 'rounded'] as const).map(s => (
+                      <button key={s} onClick={() => setJob({ cutout: { ...job.cutout!, shape: s } })}
+                        className={`py-1.5 rounded-lg text-[11px] font-bold border ${job.cutout!.shape === s ? 'bg-amber-600 border-amber-500 text-white' : 'bg-[#201d19] border-[#383228] text-stone-300'}`}>
+                        {s === 'arch' ? 'Arcadă (bolta icoanei)' : 'Dreptunghi cu colțuri rotunde'}
+                      </button>
+                    ))}
+                  </div>
+                  <ToolEditor tool={job.cutout.tool} onChange={t => setJob({ cutout: { ...job.cutout!, tool: t } })} allowed={['endmill']} />
+                  <div className="grid grid-cols-3 gap-2">
+                    <NumField label="Număr punți" value={job.cutout.tabCount} min={0} max={12} onChange={v => setJob({ cutout: { ...job.cutout!, tabCount: Math.max(0, Math.round(v)) } })} />
+                    <NumField label="Lățime punte (mm)" value={job.cutout.tabWidthMm} step={0.5} min={1} onChange={v => setJob({ cutout: { ...job.cutout!, tabWidthMm: Math.max(1, v) } })} />
+                    <NumField label="Grosime punte (mm)" value={job.cutout.tabHeightMm} step={0.5} min={0.5} onChange={v => setJob({ cutout: { ...job.cutout!, tabHeightMm: Math.max(0.5, v) } })} />
+                    {job.cutout.shape === 'rounded' && <>
+                      <NumField label="Distanță de margine (mm)" value={job.cutout.marginMm} step={1} min={0} onChange={v => setJob({ cutout: { ...job.cutout!, marginMm: Math.max(0, v) } })} />
+                      <NumField label="Rază colțuri (mm)" value={job.cutout.cornerRadiusMm} step={1} min={0} onChange={v => setJob({ cutout: { ...job.cutout!, cornerRadiusMm: Math.max(0, v) } })} />
+                    </>}
+                  </div>
+                  <span className="text-[10px] text-stone-500">
+                    Taie prin toată grosimea ({job.stockThicknessMm} mm) + 0,3 mm în masa de sacrificiu. Pune o placă de sacrificiu sub lemn!
+                    Punțile se taie la final cu dalta și se șlefuiesc.
+                  </span>
+                </>
+              )}
+            </div>
+          )}
         </>
       ) : (
         <div className={boxCls}>
@@ -306,7 +361,8 @@ export const CamPanel: React.FC<CamPanelProps> = props => {
           ))}
           {props.outputFiles.length > 1 && (
             <span className="text-[10px] text-stone-400">
-              Rulați fișierele în ordine. Între ele: montați freza următoare și refaceți doar Z0 (nu mutați X0/Y0).
+              Rulați fișierele în ordine. Între freze: montați freza următoare și refaceți doar Z0.
+              {props.outputFiles.some(f => f.name.includes('_bucata')) && ' La o bucată nouă: mutați placa / freza pe colțul stânga-jos al bucății și refaceți X0 Y0 și Z0.'}
             </span>
           )}
         </div>

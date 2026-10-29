@@ -273,11 +273,12 @@ export const CNCJogController: React.FC = () => {
           {/* Butoane Setare Zero & Reset */}
           <div className="grid grid-cols-2 gap-2 text-xs">
             <button
-              onClick={() => cncController.zeroWorkCoordinates()}
+              onClick={() => cncController.zeroWorkCoordinates('XY')}
+              title="Doar X și Y — Z0 se face separat, cu hârtia, cu freza montată"
               className="py-2 px-2.5 bg-[#201d19] hover:bg-[#2b2721] border border-[#3b352b] rounded-lg font-bold text-amber-300 transition flex items-center justify-center gap-1.5"
             >
               <Target className="w-3.5 h-3.5 text-amber-400" />
-              Setează Zero (X0 Y0 Z0)
+              Setează X0 Y0
             </button>
             <button
               onClick={() => cncController.zeroWorkCoordinates('Z')}

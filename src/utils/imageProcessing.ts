@@ -348,7 +348,8 @@ function applyFrameProfile(
 
   if (style === 'arch') {
     const cx = w / 2
-    const archRadius = w * 0.48
+    // bolta ocupă toată lățimea: se potrivește cu decuparea „arcadă” (src/cam/cutout.ts)
+    const archRadius = w * 0.5
     const dx = Math.abs(x - cx)
     if (dx < archRadius && y < h * 0.4) {
       const archY = (h * 0.35) - Math.sqrt(Math.max(0, archRadius * archRadius - dx * dx)) * 0.7

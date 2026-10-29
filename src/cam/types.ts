@@ -1,13 +1,16 @@
 // Tipuri pentru motorul CAM (scule, job, trasee, post-procesoare)
+import type { CutoutSettings } from './cutout'
 
-export type CutterShape = 'ballnose' | 'endmill' | 'vbit'
+// taperedball = freză conică cu vârf sferic (detalii fine la icoane, flancuri rezistente)
+export type CutterShape = 'ballnose' | 'endmill' | 'vbit' | 'taperedball'
 
 export interface CamTool {
   id: string
   name: string
   shape: CutterShape
-  diameterMm: number
-  tipAngleDeg: number      // doar pentru V-bit
+  diameterMm: number       // diametrul tijei / al părții tăietoare
+  tipAngleDeg: number      // V-bit și conică: unghiul INCLUS al conului (ex. 15°)
+  tipDiameterMm?: number   // conică-sferică: diametrul vârfului sferic (ex. 0.5)
   stepoverPercent: number
   stepDownMm: number
   feedRateMmMin: number
@@ -37,6 +40,12 @@ export interface CamJob {
   finishingEnabled: boolean
   finishingTool: CamTool
   finishStrategy: FinishStrategy
+
+  cutout?: CutoutSettings
+
+  // cursa utilă a mașinii; dacă piesa e mai mare, se împarte pe bucăți (0 = nelimitat)
+  bedXMm?: number
+  bedYMm?: number
 }
 
 // Mișcări: plat [tip, x, y, z, ...], tip 0 = rapid, 1 = avans lucru, 2 = coborâre

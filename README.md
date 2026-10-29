@@ -75,9 +75,28 @@ pauză, schimbare de sculă (M6) sau **câte un fișier pe freză** (GRBL, Marli
 - Poziție de lucru corectă pe GRBL 1.1 (MPos − WCO), jog, origine, homing, deblocare, E-STOP.
 - Gravură laser GRBL (M4 cu putere dinamică).
 
+### 10. 🎬 Simulator real de frezare
+- Citește **exact fișierul G-code trimis la mașină** (sau orice fișier .nc/.gcode/.tap din Aspire, ArtCAM, Fusion…) și îl execută în timp: lemnul 3D se sculptează cu forma reală a frezei.
+- Play/Pauză, viteze 1×–500×, derulare, „urmărește freza”, linia G-code curentă, poziția X/Y/Z.
+- Se oprește singur la probleme: rapid prin lemn (coliziune), tăiere în masa mașinii, plonjeu adânc în lemn plin, tăiere în afara piesei — cu linia din fișier.
+- Verificare completă în câteva secunde, pornită automat.
+
+### 11. 🎓 Lecții, ghid și rezolvarea problemelor
+- **10 lecții video animate în română** (voce românească a sistemului/browserului + subtitrare), cu animații și simulatorul real; fiecare are butoane care te duc în locul potrivit din aplicație.
+- **Ghid pas cu pas** sus: Învață → Imaginea → Trasee → Simulare → Mașina → Origine → Pornește.
+- **Probleme & Soluții**: 29 de probleme căutabile după simptom, toate erorile și alarmele GRBL explicate în română; când mașina trimite o eroare, explicația apare singură.
+- **Listă de verificare înainte de pornire** (lemn prins, freza, X0Y0, Z0, protecție) — butonul de start se activează doar după bifare.
+
+### 12. ✂️ Freză conică, decupare, piese mari
+- Freză conică cu vârf sferic (ex. R0,25 / 15°) modelată exact — pentru chipuri și mâini.
+- Decupare din placă cu punți: arcada icoanei sau dreptunghi rotunjit, prin toată grosimea, frezare convențională.
+- Împărțire pe bucăți când piesa e mai mare decât cursa mașinii, câte un fișier pe bucată.
+
 ### Verificare motor CAM
 ```
-npx tsx tests/cam-check.ts
+npx tsx tests/cam-check.ts      # fără gouging (sferică, conică, V), degroșare, G-code pe fiecare post (lent: ~10 min)
+npx tsx tests/sim-check.ts      # simulator, decupare, bucăți, fișier greșit prins, arce G2/G3
+npx tsx tests/sim-file.ts f.nc  # verifică orice fișier G-code din linia de comandă
 ```
 Verifică exact (pe segmente, la 0.05 mm) că nicio poziție a frezei nu intră în relieful final, că degroșarea
 nu plonjează mai mult de un pas Z și că G-code-ul e valid pentru fiecare post-procesor.

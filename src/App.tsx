@@ -12,7 +12,13 @@ import { Viewer2D } from './components/Viewer2D'
 import { ImageControls } from './components/ImageControls'
 import { CamPanel, type CamRunState } from './components/CamPanel'
 import { CNCJogController } from './components/CNCJogController'
-import { TutorialHub } from './components/TutorialHub'
+import { LessonsHub } from './components/LessonsHub'
+import { HelpCenter, CodeCard } from './components/HelpCenter'
+import { SimulatorPage, type SimSet } from './components/SimulatorPage'
+import { splitIntoTiles, tileCount } from './cam/tiling'
+import { WorkflowGuide } from './components/WorkflowGuide'
+import { PreflightChecklist } from './components/PreflightChecklist'
+import { explainControllerLine, type ControllerCode, type LessonId } from './help/knowledge'
 import { processImageHeightmap } from './utils/imageProcessing'
 import { generateReliefMesh, type MeshResult } from './utils/meshGenerator'
 import { traceImageToVectors, type VectorContour } from './utils/vectorizer'
@@ -117,7 +123,17 @@ export function App() {
     roughingAllowanceMm: 0.5,
     finishingEnabled: true,
     finishingTool: findTool('bn3175'),
-    finishStrategy: 'rasterX'
+    finishStrategy: 'rasterX',
+    cutout: {
+      enabled: false,
+      shape: 'arch',
+      marginMm: 5,
+      cornerRadiusMm: 10,
+      tool: { ...findTool('em3175'), stepDownMm: 2 },
+      tabCount: 4,
+      tabWidthMm: 6,
+      tabHeightMm: 2
+    }
   }))
   const [postId, setPostId] = useState<PostId>(() => loadSetting('cnc.post', { id: 'grbl' as PostId }).id)
   // implicit fișiere separate pe freză: fără tabelă de lungimi, Z0 trebuie refăcut la fiecare freză
@@ -154,7 +170,8 @@ export function App() {
   useEffect(() => {
     inputsVersion.current++
     setRunState(s => (s.stale ? s : { ...s, stale: true }))
-  }, [heightmapData, camJob, mode, engraveTool, engraveDepthMm, useLaser, laserPower])
+    setSimulatedOk(false)
+  }, [heightmapData, camJob, engraveTool, engraveDepthMm, useLaser, laserPower])
 
   // „Mergi la zero” din panoul CNC urcă la înălțimea sigură a lucrării curente
   useEffect(() => {
@@ -172,6 +189,32 @@ export function App() {
     cncController.addStatusListener(unsub)
     return () => cncController.removeStatusListener(unsub)
   }, [])
+
+  // Orice eroare/alarmă de la mașină apare imediat, explicată în română, oriunde ai fi în aplicație
+  const [machineAlert, setMachineAlert] = useState<ControllerCode | null>(null)
+  const [everRan, setEverRan] = useState(false)
+  useEffect(() => {
+    const onMsg = (line: string, dir: 'in' | 'out') => {
+      if (dir !== 'in') return
+      const code = explainControllerLine(line)
+      if (code) setMachineAlert(code)
+    }
+    cncController.addMessageListener(onMsg)
+    return () => cncController.removeMessageListener(onMsg)
+  }, [])
+
+  // Lecții / ghid / verificare
+  const [lessonToOpen, setLessonToOpen] = useState<LessonId>('intro')
+  const openLesson = (id: LessonId) => { setLessonToOpen(id); setMode('tutorials') }
+  const [simulatedOk, setSimulatedOk] = useState(false)
+  // traseele calculate în alt mod (relief vs. gravură) nu sunt valabile în modul curent
+  const [computedFor, setComputedFor] = useState<AppMode | null>(null)
+  useEffect(() => {
+    if ((mode === 'relief3d' || mode === 'engrave2d') && computedFor && computedFor !== mode) {
+      setRunState(s => (s.stale ? s : { ...s, stale: true }))
+    }
+  }, [mode, computedFor])
+  const [preflightIndex, setPreflightIndex] = useState<number | null>(null)
 
   // Recalculare relief, mesh 3D și vectori (cu mică întârziere: glisoarele nu blochează interfața)
   useEffect(() => {
@@ -303,6 +346,8 @@ export function App() {
     const versionAtStart = inputsVersion.current
     const jobAtStart = camJob
     setToolpathJob(jobAtStart)
+    setComputedFor(mode)
+    setSimulatedOk(false)
 
     if (mode === 'engrave2d') {
       if (useLaser) {
@@ -358,11 +403,34 @@ export function App() {
     }
   }
 
-  const baseName = `${mode === 'relief3d' ? 'relief3d' : 'gravura'}_${imageOptions.widthMm}x${imageOptions.heightMm}`
+  // numele vine din tipul lucrării calculate, nu din pagina pe care stai (simulator, control...)
+  const baseName = `${(computedFor ?? mode) === 'engrave2d' ? 'gravura' : 'relief3d'}_${imageOptions.widthMm}x${imageOptions.heightMm}`
+  // seturi de fișiere: piesa întreagă sau câte unul pe bucată, dacă piesa nu încape pe mașină
+  const simSets: SimSet[] = useMemo(() => {
+    if (laserGCode || !toolpaths.length) return []
+    const job = toolpathJob ?? camJob
+    const { cols, rows } = tileCount(job, job.bedXMm ?? 0, job.bedYMm ?? 0)
+    if (cols * rows === 1) {
+      return [{ label: 'Piesa întreagă', job, toolpaths, files: planOutputFiles(toolpaths, job, postId, baseName, forceSeparate) }]
+    }
+    return splitIntoTiles(toolpaths, job, job.bedXMm ?? 0, job.bedYMm ?? 0).map(t => ({
+      label: `Bucata ${t.index} (coloana ${t.col}, rândul ${t.row})`,
+      job: t.job,
+      toolpaths: t.toolpaths,
+      files: planOutputFiles(t.toolpaths, t.job, postId, `${baseName}_bucata${t.index}`, forceSeparate)
+    }))
+  }, [laserGCode, toolpaths, toolpathJob, camJob, postId, baseName, forceSeparate])
   const outputFiles: PlannedFile[] = useMemo(() => {
     if (laserGCode) return [{ name: `${baseName}_laser.nc`, render: () => laserGCode }]
-    return planOutputFiles(toolpaths, toolpathJob ?? camJob, postId, baseName, forceSeparate)
-  }, [laserGCode, toolpaths, toolpathJob, camJob, postId, baseName, forceSeparate])
+    return simSets.flatMap(s => s.files)
+  }, [laserGCode, baseName, simSets])
+  // job-ul fiecărui fișier (la bucăți: originea e colțul bucății, nu cea aleasă pentru piesă)
+  const outputFileInfo = useMemo(
+    () => simSets.flatMap(s => s.files.map(() => ({ job: s.job, setLabel: simSets.length > 1 ? s.label : null }))),
+    [simSets]
+  )
+  // altă mașină / alt mod de împărțire = alt G-code, care trebuie verificat din nou
+  useEffect(() => { setSimulatedOk(false) }, [postId, forceSeparate])
 
   // Descărcare fișiere
   const downloadBlob = (blob: Blob, filename: string) => {
@@ -382,16 +450,28 @@ export function App() {
     if (f) downloadBlob(new Blob([f.render()], { type: 'text/plain' }), f.name)
   }
 
+  // Trimiterea trece întâi prin lista de verificare
   const handleSendToCNC = (index: number) => {
-    const f = outputFiles[index]
-    if (!f) return
+    if (!outputFiles[index]) return
     if (!cncStatus.connected) {
-      showToast('Conectați întâi utilajul CNC prin cablu USB (sau porniți simulatorul).')
+      showToast('Conectați întâi utilajul CNC prin cablu USB (sau porniți Mod Simulator).')
       return
     }
+    setPreflightIndex(index)
+  }
+  const startStreaming = (index: number) => {
+    const f = outputFiles[index]
+    setPreflightIndex(null)
+    if (!f) return
     cncController.startStreaming(f.render())
+    setEverRan(true)
     setMode('controller')
     showToast(`Execuție pornită: ${f.name}`)
+  }
+  const preflightTool = (index: number): string => {
+    if (laserGCode) return 'Laser'
+    const tools = outputFiles[index]?.tools ?? []
+    return tools.length ? tools.map(t => t.name).join(', apoi ') : '—'
   }
 
   const handleDownloadSTL = () => {
@@ -458,7 +538,43 @@ export function App() {
         </div>
       )}
 
+      {machineAlert && (
+        <div className="fixed bottom-6 left-6 z-50 max-w-md w-[calc(100%-3rem)] shadow-2xl">
+          <div className="relative">
+            <button onClick={() => setMachineAlert(null)} className="absolute top-2 right-2 text-stone-400 hover:text-white text-xs" aria-label="Închide">✕</button>
+            <CodeCard code={machineAlert} onOpenLesson={id => { setMachineAlert(null); openLesson(id) }} />
+          </div>
+        </div>
+      )}
+
+      {preflightIndex !== null && outputFiles[preflightIndex] && (
+        <PreflightChecklist
+          fileName={outputFiles[preflightIndex].name}
+          toolName={preflightTool(preflightIndex)}
+          job={outputFileInfo[preflightIndex]?.job ?? toolpathJob ?? camJob}
+          tileLabel={outputFileInfo[preflightIndex]?.setLabel ?? null}
+          simulatedOk={simulatedOk}
+          status={cncStatus}
+          onConfirm={() => startStreaming(preflightIndex)}
+          onCancel={() => setPreflightIndex(null)}
+          onOpenSimulator={() => { setPreflightIndex(null); setMode('simulator') }}
+        />
+      )}
+
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 flex flex-col gap-4">
+        <WorkflowGuide
+          state={{
+            hasImage: !!sourceCanvas,
+            hasToolpaths: (toolpaths.length > 0 || !!laserGCode) && !runState.stale,
+            simulatedOk,
+            connected: cncStatus.connected,
+            running: everRan
+          }}
+          mode={mode}
+          onNavigate={setMode}
+          onOpenLesson={openLesson}
+        />
+
         {(mode === 'relief3d' || mode === 'engrave2d') && (
           <div className="flex items-center gap-2 flex-wrap">
             <input
@@ -483,7 +599,17 @@ export function App() {
         )}
 
         {mode === 'tutorials' ? (
-          <TutorialHub />
+          <LessonsHub initialLesson={lessonToOpen} onNavigate={setMode} />
+        ) : mode === 'help' ? (
+          <HelpCenter onOpenLesson={openLesson} />
+        ) : mode === 'simulator' ? (
+          <SimulatorPage
+            sets={simSets}
+            stale={runState.stale}
+            camJob={camJob}
+            onGoToCam={() => setMode('relief3d')}
+            onOursChecked={setSimulatedOk}
+          />
         ) : mode === 'controller' ? (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <div className="lg:col-span-2">

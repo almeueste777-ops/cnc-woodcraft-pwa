@@ -10,7 +10,9 @@ import {
   WifiOff,
   Usb,
   ChevronDown,
-  GraduationCap
+  GraduationCap,
+  PlayCircle,
+  LifeBuoy
 } from 'lucide-react'
 
 interface HeaderProps {
@@ -69,7 +71,7 @@ export const Header: React.FC<HeaderProps> = ({ mode, onModeChange, cncStatus })
         </div>
 
         {/* Meniu Moduri de Lucru */}
-        <nav className="flex items-center bg-[#100f0e] p-1 rounded-xl border border-[#2c2822]">
+        <nav className="flex flex-wrap items-center bg-[#100f0e] p-1 rounded-xl border border-[#2c2822]">
           <button
             onClick={() => onModeChange('relief3d')}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition ${mode === 'relief3d' ? 'bg-amber-600 text-white shadow-md' : 'text-stone-400 hover:text-stone-200'}`}
@@ -85,6 +87,13 @@ export const Header: React.FC<HeaderProps> = ({ mode, onModeChange, cncStatus })
             Gravură Vectorială
           </button>
           <button
+            onClick={() => onModeChange('simulator')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition ${mode === 'simulator' ? 'bg-amber-600 text-white shadow-md' : 'text-stone-400 hover:text-stone-200'}`}
+          >
+            <PlayCircle className="w-3.5 h-3.5" />
+            Simulator
+          </button>
+          <button
             onClick={() => onModeChange('controller')}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition ${mode === 'controller' ? 'bg-amber-600 text-white shadow-md' : 'text-stone-400 hover:text-stone-200'}`}
           >
@@ -96,7 +105,14 @@ export const Header: React.FC<HeaderProps> = ({ mode, onModeChange, cncStatus })
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition ${mode === 'tutorials' ? 'bg-amber-600 text-white shadow-md' : 'text-amber-400 hover:text-amber-300'}`}
           >
             <GraduationCap className="w-4 h-4 text-amber-400" />
-            Tutoriale & Ghid CNC
+            Lecții
+          </button>
+          <button
+            onClick={() => onModeChange('help')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition ${mode === 'help' ? 'bg-amber-600 text-white shadow-md' : 'text-stone-400 hover:text-stone-200'}`}
+          >
+            <LifeBuoy className="w-3.5 h-3.5" />
+            Probleme & Soluții
           </button>
         </nav>
 

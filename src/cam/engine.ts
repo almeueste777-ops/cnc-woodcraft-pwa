@@ -13,6 +13,7 @@ import type {
   ToolpathStats
 } from './types'
 import { MOVE_FEED, MOVE_PLUNGE, MOVE_RAPID } from './types'
+import { cutoutToolpath } from './cutout'
 
 export interface Grid {
   nx: number
@@ -89,6 +90,11 @@ export function maxPoolGrid(fine: Grid, widthMm: number, heightMm: number, targe
   return g
 }
 
+/** Diametrul care contează pentru pasul lateral (la conică: vârful sferic, nu tija) */
+export function effectiveDiameter(tool: CamTool): number {
+  return tool.shape === 'taperedball' ? Math.max(0.05, tool.tipDiameterMm ?? 0.5) : tool.diameterMm
+}
+
 /** Cât de sus e flancul sculei față de vârf, la distanța radială r */
 export function toolProfile(tool: CamTool, r: number): number {
   const R = tool.diameterMm / 2
@@ -98,6 +104,14 @@ export function toolProfile(tool: CamTool, r: number): number {
       return R - Math.sqrt(Math.max(0, R * R - r * r))
     case 'vbit':
       return r / Math.tan(((tool.tipAngleDeg || 60) * Math.PI) / 360)
+    case 'taperedball': {
+      // sferă de rază rt în vârf, tangentă la un con cu semi-unghiul a
+      const rt = Math.max(0.01, (tool.tipDiameterMm ?? 0.5) / 2)
+      const a = ((tool.tipAngleDeg || 15) * Math.PI) / 360
+      const rTan = rt * Math.cos(a)
+      if (r <= rTan) return rt - Math.sqrt(Math.max(0, rt * rt - r * r))
+      return rt - rt * Math.sin(a) + (r - rTan) / Math.tan(a)
+    }
     default:
       return 0
   }
@@ -153,7 +167,13 @@ function dropCutterAt(surface: Grid, tool: CamTool, x: number, y: number): numbe
   const { nx, ny, cellX, cellY, data } = surface
   const i0 = Math.max(0, Math.ceil((x - R) / cellX)), i1 = Math.min(nx - 1, Math.floor((x + R) / cellX))
   const j0 = Math.max(0, Math.ceil((y - R) / cellY)), j1 = Math.min(ny - 1, Math.floor((y + R) / cellY))
-  let best = -Infinity
+  // suprafața de exact sub vârf (bilineară): un vârf ascuțit (V, conică) ar „cădea”
+  // altfel între noduri, până la 1,7 × jumătate de celulă sub fundul real
+  const fx = Math.max(0, Math.min(nx - 1, x / cellX)), fy = Math.max(0, Math.min(ny - 1, y / cellY))
+  const ia = Math.min(nx - 2, Math.floor(fx)), ja = Math.min(ny - 2, Math.floor(fy))
+  const tx = fx - ia, ty = fy - ja
+  const s00 = data[ja * nx + ia], s10 = data[ja * nx + ia + 1], s01 = data[(ja + 1) * nx + ia], s11 = data[(ja + 1) * nx + ia + 1]
+  let best = (s00 + (s10 - s00) * tx) * (1 - ty) + (s01 + (s11 - s01) * tx) * ty
   for (let j = j0; j <= j1; j++) {
     const dy = j * cellY - y
     for (let i = i0; i <= i1; i++) {
@@ -279,7 +299,7 @@ function gridLine(comp: Grid, surface: Grid, tool: CamTool, alongX: boolean, row
 /** Finisare raster pe suprafața compensată (zig-zag continuu, cu legături care urmăresc suprafața) */
 function finishingRaster(comp: Grid, surface: Grid, job: CamJob, alongX: boolean, tol: number): MoveBuffer {
   const tool = job.finishingTool
-  const step = Math.max(0.02, (tool.diameterMm * tool.stepoverPercent) / 100)
+  const step = Math.max(0.02, (effectiveDiameter(tool) * tool.stepoverPercent) / 100)
   const last = (alongX ? comp.nx : comp.ny) - 1
   const rows = rowIndices(alongX ? comp.ny : comp.nx, alongX ? comp.cellY : comp.cellX, step)
   const mb = new MoveBuffer()
@@ -447,7 +467,9 @@ export function roughingCell(tool: CamTool): number {
 /** Grila de finisare nu e mai rară decât pixelul imaginii: eroarea laterală rămâne sub un pixel */
 export function finishingCell(job: CamJob, imgW: number, imgH: number): number {
   const pixelMm = Math.min(job.widthMm / imgW, job.heightMm / imgH)
-  return Math.max(0.08, Math.min(0.25, job.finishingTool.diameterMm / 16, pixelMm))
+  const t = job.finishingTool
+  const tipLimit = t.shape === 'taperedball' ? effectiveDiameter(t) / 3 : Infinity
+  return Math.max(0.08, Math.min(0.25, t.diameterMm / 16, pixelMm, tipLimit))
 }
 
 export function runCam(input: CamInput, onProgress: ProgressFn = () => {}): CamOutput {
@@ -491,13 +513,20 @@ export function runCam(input: CamInput, onProgress: ProgressFn = () => {}): CamO
     })
 
     if (!job.roughingEnabled) {
-      const depthPerTool = job.maxDepthMm / tool.diameterMm
-      if (depthPerTool > 1) {
+      // la conică contează vârful subțire, nu tija
+      const d = effectiveDiameter(tool)
+      if (job.maxDepthMm / d > 1) {
         warnings.push(
-          `Fără degroșare, freza de ${tool.diameterMm} mm ar tăia până la ${job.maxDepthMm} mm adâncime dintr-o trecere — risc mare de rupere. Activați degroșarea.`
+          `Fără degroșare, freza (${tool.shape === 'taperedball' ? `vârf de ${d} mm` : `${d} mm`}) ar tăia până la ${job.maxDepthMm} mm adâncime dintr-o trecere — risc mare de rupere. Activați degroșarea.`
         )
       }
     }
+  }
+
+  if (job.cutout?.enabled) {
+    onProgress('Decupare din placă', 0)
+    toolpaths.push(cutoutToolpath(job, job.cutout))
+    if (job.cutout.tabCount < 2) warnings.push('Decupare cu mai puțin de 2 punți: piesa se poate desprinde și smulge la final.')
   }
 
   if (job.safeZMm < 1) warnings.push('Z de siguranță sub 1 mm — risc de lovire a piesei la deplasări rapide.')

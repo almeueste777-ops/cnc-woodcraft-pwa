@@ -259,8 +259,8 @@ export class CNCSerialManager {
   /**
    * Setare Origine Lucru (X0 Y0 Z0)
    */
-  public async zeroWorkCoordinates(axis?: 'X' | 'Y' | 'Z') {
-    const axes = axis ? `${axis}0` : 'X0 Y0 Z0'
+  public async zeroWorkCoordinates(axis?: 'X' | 'Y' | 'Z' | 'XY') {
+    const axes = axis === 'XY' ? 'X0 Y0' : axis ? `${axis}0` : 'X0 Y0 Z0'
     await this.sendCommand(this.firmware === 'marlin' ? `G92 ${axes}` : `G10 L20 P1 ${axes}`)
   }
 
