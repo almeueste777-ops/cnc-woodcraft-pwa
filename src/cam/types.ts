@@ -41,6 +41,11 @@ export interface CamJob {
   finishingTool: CamTool
   finishStrategy: FinishStrategy
 
+  // finisare de rest: o freză mai mică, doar unde finisarea n-a putut ajunge (colțuri, șanțuri)
+  restEnabled?: boolean
+  restTool?: CamTool
+  restThresholdMm?: number
+
   cutout?: CutoutSettings
 
   // cursa utilă a mașinii; dacă piesa e mai mare, se împarte pe bucăți (0 = nelimitat)

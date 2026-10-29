@@ -92,12 +92,29 @@ pauză, schimbare de sculă (M6) sau **câte un fișier pe freză** (GRBL, Marli
 - Decupare din placă cu punți: arcada icoanei sau dreptunghi rotunjit, prin toată grosimea, frezare convențională.
 - Împărțire pe bucăți când piesa e mai mare decât cursa mașinii, câte un fișier pe bucată.
 
+### 13. 🖌️ Atelier hartă de adâncime și hartă AI
+- **Hartă făcută de AI din poză** (Depth Anything V2, rulează în browser; poza nu pleacă din calculator).
+- **Combinare de hărți**: straturi din PNG 16 biți, STL, imagine, cupolă sau harta AI — adună, scade,
+  cel mai înalt, cel mai jos, înlocuiește; poziție și mărime.
+- **Retușare cu pensula**: ridică, coboară, netezește, nivelează, șterge retușul, cu anulare.
+
+### 14. ✍️ Lucrări vectoriale (ca în V-Carve Pro)
+- Forma din imagine și/sau din **text scris cu un font**.
+- **V-carve** (muchii ascuțite, fund plat golit cu freză dreaptă), **buzunar**, **profil** pe dinafară /
+  dinăuntru / pe linie cu punți, **intrări în rampă**, **găurire** cu retrageri.
+- **Finisare de rest** la relief: freza fină doar unde cea mare n-a încăput.
+- **Calculator de avans** după așchia pe dinte, materialul și mașina.
+
 ### Verificare motor CAM
 ```
 npx tsx tests/cam-check.ts      # fără gouging (sferică, conică, V), degroșare, G-code pe fiecare post (lent: ~10 min)
 npx tsx tests/sim-check.ts      # simulator, decupare, bucăți și plăci separate, coliziuni G0, fișier greșit prins, arce G2/G3
 npx tsx tests/mesh-check.ts     # plasa 3D / STL: corp închis, normale, volum, timp
 npx tsx tests/depth-check.ts    # hartă de adâncime PNG 16 biți: scriere/citire fără pierdere
+npx tsx tests/depthedit-check.ts # straturi și pensulă
+npx tsx tests/vcarve-check.ts   # V-carve, buzunar, profil, găuri: exact față de forma analitică
+npx tsx tests/vectorjob-check.ts # lucrările împreună: fund plat cu freză dreaptă, ordine, găuri
+npx tsx tests/rest-check.ts     # finisare de rest: nu taie în relief, pas Z, zone
 npx tsx tests/sim-file.ts f.nc  # verifică orice fișier G-code din linia de comandă
 ```
 Verifică exact (pe segmente, la 0.05 mm) că nicio poziție a frezei nu intră în relieful final, că degroșarea

@@ -1,6 +1,9 @@
 import type { ImageProcessingOptions } from '../types/cnc'
 import type { CamJob, CamTool, PostId } from '../cam/types'
 import type { DepthSource } from './modelImport'
+import type { DepthLayer, Retouch } from './depthEdit'
+import type { VectorOps } from '../cam/vectorJob'
+import type { ShapeSource, TextSpec } from './shapeMask'
 
 export interface ProjectFile {
   app: 'cnc-woodcraft-studio'
@@ -12,7 +15,23 @@ export interface ProjectFile {
   engraveDepthMm: number
   sourcePng: string // imaginea sursă (data URL)
   depth?: { width: number; height: number; sizeMm: DepthSource['sizeMm']; name: string; base64: string }
+  // lucrările vectoriale: textul, forma, frezele și opțiunile fiecărei lucrări
+  vector?: {
+    ops: VectorOps
+    text: TextSpec
+    source: ShapeSource
+    threshold: number
+    invert: boolean
+    contourEnabled: boolean
+  }
+  // atelierul hărții: straturile și retușul cu pensula
+  edits?: {
+    layers: Array<Omit<DepthLayer, 'data'> & { base64: string }>
+    retouch?: { w: number; h: number; base64: string }
+  }
 }
+
+export interface DepthEdits { layers: DepthLayer[]; retouch: Retouch | null }
 
 function floatToBase64(a: Float32Array): string {
   const bytes = new Uint8Array(a.buffer, a.byteOffset, a.byteLength)
@@ -29,9 +48,10 @@ function base64ToFloat(b64: string): Float32Array {
 }
 
 export function serializeProject(
-  p: Omit<ProjectFile, 'app' | 'version' | 'sourcePng' | 'depth'>,
+  p: Omit<ProjectFile, 'app' | 'version' | 'sourcePng' | 'depth' | 'edits'>,
   source: HTMLCanvasElement,
-  depth: DepthSource | null
+  depth: DepthSource | null,
+  edits?: DepthEdits
 ): string {
   const file: ProjectFile = {
     app: 'cnc-woodcraft-studio',
@@ -40,6 +60,12 @@ export function serializeProject(
     sourcePng: source.toDataURL('image/png'),
     depth: depth
       ? { width: depth.width, height: depth.height, sizeMm: depth.sizeMm, name: depth.name, base64: floatToBase64(depth.data) }
+      : undefined,
+    edits: edits && (edits.layers.length || edits.retouch)
+      ? {
+          layers: edits.layers.map(({ data, ...rest }) => ({ ...rest, base64: floatToBase64(data) })),
+          retouch: edits.retouch ? { w: edits.retouch.w, h: edits.retouch.h, base64: floatToBase64(edits.retouch.data) } : undefined
+        }
       : undefined
   }
   return JSON.stringify(file)
@@ -49,6 +75,7 @@ export async function parseProject(text: string): Promise<{
   project: ProjectFile
   canvas: HTMLCanvasElement
   depth: DepthSource | null
+  edits: DepthEdits
 }> {
   const project = JSON.parse(text) as ProjectFile
   if (project.app !== 'cnc-woodcraft-studio') throw new Error('Fișierul nu este un proiect CNC WoodCraft Studio.')
@@ -65,5 +92,11 @@ export async function parseProject(text: string): Promise<{
   const depth = project.depth
     ? { width: project.depth.width, height: project.depth.height, sizeMm: project.depth.sizeMm, name: project.depth.name, data: base64ToFloat(project.depth.base64) }
     : null
-  return { project, canvas, depth }
+  const edits: DepthEdits = {
+    layers: (project.edits?.layers ?? []).map(({ base64, ...rest }) => ({ ...rest, data: base64ToFloat(base64) })),
+    retouch: project.edits?.retouch
+      ? { w: project.edits.retouch.w, h: project.edits.retouch.h, data: base64ToFloat(project.edits.retouch.base64) }
+      : null
+  }
+  return { project, canvas, depth, edits }
 }

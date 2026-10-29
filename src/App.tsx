@@ -32,6 +32,14 @@ import { runCamInWorker, cancelCam } from './cam/camClient'
 import { planOutputFiles, type PlannedFile } from './cam/postProcessors'
 import { vectorEngraveToolpath } from './cam/vectorToolpath'
 import { findTool } from './cam/toolLibrary'
+import { DepthEditor } from './components/DepthEditor'
+import { applyLayers, composeDepth, type DepthLayer, type Retouch } from './utils/depthEdit'
+import type { AiDepthResult } from './utils/aiDepth'
+import { VectorPanel } from './components/VectorPanel'
+import { buildShapeMask, maskPreviewUrl, FONTS, type ShapeSource, type TextSpec } from './utils/shapeMask'
+import type { ShapeMask } from './cam/vectorCam'
+import type { VectorOps } from './cam/vectorJob'
+import { runVectorInWorker } from './cam/camClient'
 import { CheckCircle2, FolderOpen, Save, Eye, Box } from 'lucide-react'
 
 type CamSettings = Omit<CamJob, 'widthMm' | 'heightMm' | 'maxDepthMm' | 'stockThicknessMm'>
@@ -62,6 +70,12 @@ export function App() {
   depthSourceRef.current = depthSource
   const [processedCanvas, setProcessedCanvas] = useState<HTMLCanvasElement | null>(null)
   const [heightmapData, setHeightmapData] = useState<Float32Array | null>(null)
+  // mărimea hărții de mai sus (vine la ~40 ms după imaginea procesată; nu se ia din canvas)
+  const [hmSize, setHmSize] = useState({ w: 0, h: 0 })
+  // atelierul hărții: relieful calculat din imagine, straturile puse peste el și retușul cu pensula
+  const [baseMap, setBaseMap] = useState<{ data: Float32Array; w: number; h: number } | null>(null)
+  const [layers, setLayers] = useState<DepthLayer[]>([])
+  const [retouch, setRetouch] = useState<Retouch | null>(null)
 
   // Rezultate 3D Mesh & Vectori
   const [meshResult, setMeshResult] = useState<MeshResult | null>(null)
@@ -147,6 +161,33 @@ export function App() {
   useEffect(() => saveSetting('cnc.camSettings', camSettings), [camSettings])
   useEffect(() => saveSetting('cnc.post', { id: postId }), [postId])
 
+  // Lucrări vectoriale (ca în V-Carve Pro): forma vine din imagine și/sau dintr-un text
+  const [vectorOps, setVectorOps] = useState<VectorOps>(() => {
+    const def: VectorOps = {
+      vcarve: { enabled: false, tool: findTool('vb60'), flatDepthMm: 0, clearEnabled: false, clearTool: findTool('em3175') },
+      pocket: { enabled: false, tool: findTool('em3175'), depthMm: 3, ramp: { enabled: true, angleDeg: 5 } },
+      profile: { enabled: false, tool: findTool('em3175'), side: 'outside', depthMm: 10, tabs: { count: 4, widthMm: 6, heightMm: 2 }, ramp: { enabled: true, angleDeg: 5 } },
+      drill: { enabled: false, tool: findTool('em3175'), depthMm: 10, peckMm: 3, fromShapes: true, maxHoleMm: 6, manual: '' }
+    }
+    // setările salvate de o versiune mai veche pot să nu aibă toate câmpurile: completăm pe fiecare lucrare
+    const saved = loadSetting<Partial<VectorOps>>('cnc.vectorOps', {})
+    return {
+      vcarve: { ...def.vcarve, ...saved.vcarve },
+      pocket: { ...def.pocket, ...saved.pocket, ramp: { ...def.pocket.ramp, ...saved.pocket?.ramp } },
+      profile: { ...def.profile, ...saved.profile, tabs: { ...def.profile.tabs, ...saved.profile?.tabs }, ramp: { ...def.profile.ramp, ...saved.profile?.ramp } },
+      drill: { ...def.drill, ...saved.drill, manual: saved.drill?.manual ?? '' }
+    }
+  })
+  useEffect(() => saveSetting('cnc.vectorOps', vectorOps), [vectorOps])
+  const [contourEnabled, setContourEnabled] = useState(true)
+  const [shapeSource, setShapeSource] = useState<ShapeSource>('image')
+  const [maskThreshold, setMaskThreshold] = useState(128)
+  const [maskInvert, setMaskInvert] = useState(false)
+  const [textSpec, setTextSpec] = useState<TextSpec>({ text: '', font: FONTS[0].id, sizeMm: 20, bold: false, italic: false, xFrac: 0.5, yFrac: 0.5, lineSpacing: 1.2 })
+  const [shapeMask, setShapeMask] = useState<ShapeMask | null>(null)
+  const [maskUrl, setMaskUrl] = useState<string | null>(null)
+  const vectorOpsOn = vectorOps.vcarve.enabled || vectorOps.pocket.enabled || vectorOps.profile.enabled || vectorOps.drill.enabled
+
   const camJob: CamJob = useMemo(() => ({
     ...camSettings,
     widthMm: imageOptions.widthMm,
@@ -179,7 +220,7 @@ export function App() {
     inputsVersion.current++
     setRunState(s => (s.stale ? s : { ...s, stale: true }))
     setSimulatedOk(false)
-  }, [heightmapData, pathKey, engraveTool, engraveDepthMm, useLaser, laserPower])
+  }, [heightmapData, pathKey, engraveTool, engraveDepthMm, useLaser, laserPower, shapeMask, vectorOps, contourEnabled])
 
   // „Mergi la zero” din panoul CNC urcă la înălțimea sigură a lucrării curente
   useEffect(() => {
@@ -234,8 +275,7 @@ export function App() {
         depthSource
       )
       setProcessedCanvas(pCanvas)
-      setHeightmapData(hData)
-      setMeshResult(generateReliefMesh(hData, width, height, imageOptions, 800))
+      setBaseMap({ data: hData, w: width, h: height })
 
       const vecResult = traceImageToVectors(pCanvas, 128, 0.4, imageOptions.widthMm, imageOptions.heightMm)
       setContours(vecResult.contours)
@@ -245,6 +285,54 @@ export function App() {
     return () => clearTimeout(timer)
   }, [sourceCanvas, depthSource, imageOptions])
 
+  // forma lucrărilor vectoriale: doar în modul gravură, cu mică întârziere (textul se scrie literă cu literă)
+  useEffect(() => {
+    if (mode !== 'engrave2d') return
+    const timer = setTimeout(() => {
+      const m = buildShapeMask({
+        widthMm: imageOptions.widthMm, heightMm: imageOptions.heightMm, source: shapeSource,
+        image: processedCanvas, threshold: maskThreshold, invertImage: maskInvert, text: textSpec
+      })
+      setShapeMask(m)
+      setMaskUrl(maskPreviewUrl(m))
+    }, 200)
+    return () => clearTimeout(timer)
+  }, [mode, imageOptions.widthMm, imageOptions.heightMm, shapeSource, processedCanvas, maskThreshold, maskInvert, textSpec])
+
+  // oglindirea stânga-dreapta întoarce relieful; retușul (pe pixeli) se întoarce odată cu el
+  const prevMirror = useRef(!!imageOptions.mirrorX)
+  useEffect(() => {
+    const m = !!imageOptions.mirrorX
+    if (m === prevMirror.current) return
+    prevMirror.current = m
+    setRetouch(r => {
+      if (!r) return r
+      const out = new Float32Array(r.data.length)
+      for (let j = 0; j < r.h; j++) for (let i = 0; i < r.w; i++) out[j * r.w + i] = r.data[j * r.w + (r.w - 1 - i)]
+      return { ...r, data: out }
+    })
+  }, [imageOptions.mirrorX])
+
+  // relieful final = bază + straturi + retuș; din el se fac plasa 3D, traseele și harta descărcată
+  const underMap = useMemo(() => {
+    if (!baseMap) return null
+    if (!layers.some(l => l.visible)) return baseMap
+    return { data: applyLayers(baseMap.data, baseMap.w, baseMap.h, layers, imageOptions.widthMm, imageOptions.heightMm), w: baseMap.w, h: baseMap.h }
+  }, [baseMap, layers, imageOptions.widthMm, imageOptions.heightMm])
+  const meshOptions = useRef(imageOptions)
+  meshOptions.current = imageOptions
+  useEffect(() => {
+    if (!underMap) return
+    const timer = setTimeout(() => {
+      const hasEdits = underMap !== baseMap || (retouch && retouch.w === underMap.w && retouch.h === underMap.h)
+      const final = hasEdits ? composeDepth(underMap.data, retouch, underMap.w, underMap.h) : underMap.data
+      setHeightmapData(final)
+      setHmSize({ w: underMap.w, h: underMap.h })
+      setMeshResult(generateReliefMesh(final, underMap.w, underMap.h, meshOptions.current, 800))
+    }, 40)
+    return () => clearTimeout(timer)
+  }, [underMap, baseMap, retouch])
+
   const resetResults = () => {
     cancelCam()
     setToolpaths([])
@@ -252,7 +340,37 @@ export function App() {
     setSimMesh(null)
     setShowSim(false)
     setRunState({ running: false, stage: '', fraction: 0, error: null, warnings: [], stale: false })
+    // retușul ține de pixelii imaginii vechi; straturile rămân (se pot pune pe orice relief)
+    setRetouch(null)
   }
+
+  // o hartă de adâncime gata făcută (PNG 16 biți, hartă AI) devine relieful, fără prelucrări
+  const applyDepthSource = (src: { data: Float32Array; width: number; height: number }, name: string, msg: string) => {
+    let { data, width: dw, height: dh } = src
+    if (dw > MAX_IMAGE_DIM || dh > MAX_IMAGE_DIM) {
+      const k = MAX_IMAGE_DIM / Math.max(dw, dh)
+      const nw = Math.max(1, Math.round(dw * k)), nh = Math.max(1, Math.round(dh * k))
+      const small = new Float32Array(nw * nh)
+      for (let y = 0; y < nh; y++) for (let x = 0; x < nw; x++) {
+        small[y * nw + x] = data[Math.min(dh - 1, Math.floor((y + 0.5) / k)) * dw + Math.min(dw - 1, Math.floor((x + 0.5) / k))]
+      }
+      data = small; dw = nw; dh = nh
+    }
+    const depth: DepthSource = { data, width: dw, height: dh, name, sizeMm: { x: 0, y: 0, z: 0 } }
+    resetResults()
+    setDepthSource(depth)
+    setSourceCanvas(depthToCanvas(depth))
+    setImageOptions(prev => ({
+      ...prev,
+      reliefMode: 'depthmap',
+      heightMm: Math.round(prev.widthMm / (dw / dh)),
+      blurRadius: 0, edgeSharpen: 0, haloBoost: 0, contrast: 100, brightness: 0, gamma: 1, invert: false,
+      frameStyle: 'none', frameWidthMm: 0
+    }))
+    showToast(msg)
+  }
+  const handleAiAsRelief = (d: AiDepthResult, name: string) =>
+    applyDepthSource(d, name, `Harta AI folosită ca relief (${d.width}×${d.height}). O poți retușa cu pensula.`)
 
   // Încărcare mostră icoană
   const handleLoadPresetIcon = (type: 'virginMary' | 'christ' | 'cross') => {
@@ -299,28 +417,7 @@ export function App() {
       if (/\.png$/i.test(file.name)) {
         const d16 = await decodeDepthPng16(await file.arrayBuffer())
         if (d16) {
-          let { data, width: dw, height: dh } = d16
-          if (dw > MAX_IMAGE_DIM || dh > MAX_IMAGE_DIM) {
-            const k = MAX_IMAGE_DIM / Math.max(dw, dh)
-            const nw = Math.max(1, Math.round(dw * k)), nh = Math.max(1, Math.round(dh * k))
-            const small = new Float32Array(nw * nh)
-            for (let y = 0; y < nh; y++) for (let x = 0; x < nw; x++) {
-              small[y * nw + x] = data[Math.min(dh - 1, Math.floor((y + 0.5) / k)) * dw + Math.min(dw - 1, Math.floor((x + 0.5) / k))]
-            }
-            data = small; dw = nw; dh = nh
-          }
-          const depth: DepthSource = { data, width: dw, height: dh, name: file.name, sizeMm: { x: 0, y: 0, z: 0 } }
-          resetResults()
-          setDepthSource(depth)
-          setSourceCanvas(depthToCanvas(depth))
-          setImageOptions(prev => ({
-            ...prev,
-            reliefMode: 'depthmap',
-            heightMm: Math.round(prev.widthMm / (dw / dh)),
-            blurRadius: 0, edgeSharpen: 0, haloBoost: 0, contrast: 100, brightness: 0, gamma: 1, invert: false,
-            frameStyle: 'none', frameWidthMm: 0
-          }))
-          showToast(`Hartă de adâncime pe 16 biți încărcată (${dw}×${dh}, 65 536 de niveluri)`)
+          applyDepthSource(d16, file.name, `Hartă de adâncime pe 16 biți încărcată (${d16.width}×${d16.height}, 65 536 de niveluri)`)
           return
         }
       }
@@ -381,6 +478,16 @@ export function App() {
   // Calcul trasee
   const handleCompute = async () => {
     if (!heightmapData || !processedCanvas) return
+    if (heightmapData.length !== hmSize.w * hmSize.h) { showToast('Harta se pregătește — mai apasă o dată peste o clipă.'); return }
+    // verificările care nu pornesc niciun calcul: înainte de a marca traseele vechi ca „ale acestui mod”
+    if (mode === 'engrave2d' && !useLaser && !contourEnabled && !vectorOpsOn) {
+      setRunState(s => ({ ...s, error: 'Bifează cel puțin o lucrare: V-carve, buzunar, profil, găuri sau gravură pe contur.' }))
+      return
+    }
+    if (mode !== 'engrave2d' && !camJob.roughingEnabled && !camJob.finishingEnabled) {
+      setRunState(s => ({ ...s, error: 'Activați cel puțin degroșarea sau finisarea.' }))
+      return
+    }
     const versionAtStart = inputsVersion.current
     const jobAtStart = camJob
     setToolpathJob(jobAtStart)
@@ -403,16 +510,35 @@ export function App() {
         showToast(`Gravură laser: ${contours.length} contururi, ~${Math.round(out.stats.estimatedTimeMin)} min`)
         return
       }
-      const tp = vectorEngraveToolpath(contours, engraveTool, camJob, engraveDepthMm)
       setLaserGCode(null)
-      setToolpaths([tp])
-      setSimMesh(null)
-      setRunState({ running: false, stage: '', fraction: 1, error: null, warnings: [], stale: false })
-      return
-    }
-
-    if (!camJob.roughingEnabled && !camJob.finishingEnabled) {
-      setRunState(s => ({ ...s, error: 'Activați cel puțin degroșarea sau finisarea.' }))
+      const tps: Toolpath[] = contourEnabled ? [vectorEngraveToolpath(contours, engraveTool, jobAtStart, engraveDepthMm)] : []
+      if (!vectorOpsOn || !shapeMask) {
+        setToolpaths(tps)
+        setSimMesh(null)
+        setShowSim(false)
+        setRunState({ running: false, stage: '', fraction: 1, error: null, warnings: [], stale: false })
+        return
+      }
+      setRunState({ running: true, stage: 'Pornire...', fraction: 0, error: null, warnings: [], stale: false })
+      try {
+        // gravura pe contur întâi, apoi găuri → buzunar → V-carve → profil (decuparea la final);
+        // toate intră în simularea 3D
+        const out = await runVectorInWorker({ mask: shapeMask, job: jobAtStart, ops: vectorOps, extraToolpaths: tps }, (stage, fraction) => setRunState(s => ({ ...s, stage, fraction })))
+        const all = out.toolpaths
+        setToolpaths(all)
+        if (out.simulation) {
+          const simOpts = { ...imageOptions, maxDepthMm: out.simDepthMm, baseThicknessMm: Math.max(1, jobAtStart.stockThicknessMm - out.simDepthMm) }
+          setSimMesh(generateReliefMesh(out.simulation.heightmap, out.simulation.width, out.simulation.height, simOpts, 1000))
+          setShowSim(true)
+        }
+        setRunState({ running: false, stage: '', fraction: 1, error: null, warnings: out.warnings, stale: inputsVersion.current !== versionAtStart })
+        const total = all.reduce((s, t) => s + t.stats.estimatedTimeMin, 0)
+        showToast(`Trasee gata: ${all.length}, ~${Math.floor(total / 60)}h ${Math.round(total % 60)}m. Vezi simularea 3D.`)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        if (msg === 'Calcul anulat' || msg.startsWith('Înlocuit')) setRunState(s => ({ ...s, running: false }))
+        else setRunState(s => ({ ...s, running: false, error: `Calculul a eșuat: ${msg}` }))
+      }
       return
     }
 
@@ -420,7 +546,7 @@ export function App() {
     setRunState({ running: true, stage: 'Pornire...', fraction: 0, error: null, warnings: [], stale: false })
     try {
       const out = await runCamInWorker(
-        { heightmap: heightmapData, imgW: processedCanvas.width, imgH: processedCanvas.height, job: jobAtStart },
+        { heightmap: heightmapData, imgW: hmSize.w, imgH: hmSize.h, job: jobAtStart },
         (stage, fraction) => setRunState(s => ({ ...s, stage, fraction }))
       )
       setToolpaths(out.toolpaths)
@@ -524,15 +650,16 @@ export function App() {
   }
 
   const handleDownloadSTL = () => {
-    const m = showSim && simMesh ? simMesh : meshResult
+    const m = simHere ? simMesh : meshResult
     if (!m) return
-    downloadBlob(m.getStlBlob(), `${showSim && simMesh ? 'simulare_frezare' : 'sculptura_3d'}_${imageOptions.widthMm}x${imageOptions.heightMm}mm.stl`)
+    downloadBlob(m.getStlBlob(), `${simHere ? 'simulare_frezare' : 'sculptura_3d'}_${imageOptions.widthMm}x${imageOptions.heightMm}mm.stl`)
   }
 
   // harta de adâncime a reliefului proiectat (nu a simulării), PNG gri 16 biți, alb = sus
   const handleDownloadDepth = async () => {
     if (!heightmapData || !processedCanvas) return
-    const blob = await encodeDepthPng16(heightmapData, processedCanvas.width, processedCanvas.height)
+    if (heightmapData.length !== hmSize.w * hmSize.h) return
+    const blob = await encodeDepthPng16(heightmapData, hmSize.w, hmSize.h)
     downloadBlob(blob, `harta_adancime_${imageOptions.widthMm}x${imageOptions.heightMm}x${imageOptions.maxDepthMm}mm_16bit.png`)
   }
 
@@ -548,12 +675,19 @@ export function App() {
   const projectInputRef = useRef<HTMLInputElement>(null)
   const handleSaveProject = () => {
     if (!sourceCanvas) return
-    const text = serializeProject({ imageOptions, camJob, postId, engraveTool, engraveDepthMm }, sourceCanvas, depthSource)
+    const text = serializeProject({
+      imageOptions, camJob, postId, engraveTool, engraveDepthMm,
+      vector: { ops: vectorOps, text: textSpec, source: shapeSource, threshold: maskThreshold, invert: maskInvert, contourEnabled }
+    }, sourceCanvas, depthSource, { layers, retouch })
     downloadBlob(new Blob([text], { type: 'application/json' }), `proiect_cnc_${imageOptions.widthMm}x${imageOptions.heightMm}.json`)
   }
   const openProjectFile = async (file: File) => {
-    const { project, canvas, depth } = await parseProject(await file.text())
+    const { project, canvas, depth, edits } = await parseProject(await file.text())
     resetResults()
+    setLayers(edits.layers)
+    // retușul din fișier e deja în orientarea proiectului: nu se mai întoarce la schimbarea oglindirii
+    prevMirror.current = !!project.imageOptions.mirrorX
+    setRetouch(edits.retouch)
     setDepthSource(depth)
     setSourceCanvas(canvas)
     setImageOptions(project.imageOptions)
@@ -562,14 +696,24 @@ export function App() {
     setPostId(project.postId)
     setEngraveTool(project.engraveTool)
     setEngraveDepthMm(project.engraveDepthMm)
+    if (project.vector) {
+      setVectorOps(project.vector.ops)
+      setTextSpec(project.vector.text)
+      setShapeSource(project.vector.source)
+      setMaskThreshold(project.vector.threshold)
+      setMaskInvert(project.vector.invert)
+      setContourEnabled(project.vector.contourEnabled)
+    }
     showToast(`Proiect deschis: ${file.name}`)
   }
 
-  const viewerMesh = showSim && simMesh ? simMesh : meshResult
-  const simToggle = simMesh && mode === 'relief3d' && (
+  // simularea se arată doar în modul în care s-a calculat (cea vectorială nu e relieful)
+  const simHere = showSim && !!simMesh && (computedFor === mode || (mode === 'controller' && computedFor === 'relief3d'))
+  const viewerMesh = simHere ? simMesh : meshResult
+  const simToggle = simMesh && (mode === 'relief3d' || mode === 'engrave2d') && computedFor === mode && (
     <div className="flex gap-1.5 bg-[#1a1815] border border-[#2f2b26] rounded-xl p-1 w-fit">
       <button onClick={() => setShowSim(false)} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold ${!showSim ? 'bg-amber-600 text-white' : 'text-stone-400'}`}>
-        <Box className="w-3.5 h-3.5" /> Model dorit
+        <Box className="w-3.5 h-3.5" /> {mode === 'engrave2d' ? 'Vectori 2D' : 'Model dorit'}
       </button>
       <button onClick={() => setShowSim(true)} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold ${showSim ? 'bg-amber-600 text-white' : 'text-stone-400'}`}>
         <Eye className="w-3.5 h-3.5" /> Simulare frezare (cum iese din lemn)
@@ -680,6 +824,8 @@ export function App() {
             <div className="lg:col-span-7 flex flex-col gap-4">
               {mode === 'relief3d' ? (
                 <Viewer3D meshResult={viewerMesh} woodType={woodType} onWoodTypeChange={setWoodType} onDownloadSTL={handleDownloadSTL} onDownloadDepth={handleDownloadDepth} />
+              ) : showSim && simMesh && computedFor === 'engrave2d' ? (
+                <Viewer3D meshResult={simMesh} woodType={woodType} onWoodTypeChange={setWoodType} onDownloadSTL={handleDownloadSTL} />
               ) : (
                 <Viewer2D
                   processedCanvas={processedCanvas}
@@ -720,6 +866,31 @@ export function App() {
                 isCNCConnected={cncStatus.connected}
                 isStreaming={cncController.streaming}
                 previewUrl={tilePreviewUrl}
+                contourEnabled={contourEnabled}
+                onContourEnabledChange={setContourEnabled}
+                extraTools={[
+                  ...(vectorOps.vcarve.enabled ? [{ label: 'V-carve', tool: vectorOps.vcarve.tool, onApply: (t: CamTool) => setVectorOps(o => ({ ...o, vcarve: { ...o.vcarve, tool: t } })) }] : []),
+                  ...(vectorOps.vcarve.enabled && vectorOps.vcarve.flatDepthMm > 0 && vectorOps.vcarve.clearEnabled && vectorOps.vcarve.clearTool ? [{ label: 'Fund plat', tool: vectorOps.vcarve.clearTool, onApply: (t: CamTool) => setVectorOps(o => ({ ...o, vcarve: { ...o.vcarve, clearTool: t } })) }] : []),
+                  ...(vectorOps.pocket.enabled ? [{ label: 'Buzunar', tool: vectorOps.pocket.tool, onApply: (t: CamTool) => setVectorOps(o => ({ ...o, pocket: { ...o.pocket, tool: t } })) }] : []),
+                  ...(vectorOps.profile.enabled ? [{ label: 'Profil', tool: vectorOps.profile.tool, slot: true, onApply: (t: CamTool) => setVectorOps(o => ({ ...o, profile: { ...o.profile, tool: t } })) }] : []),
+                  ...(vectorOps.drill.enabled ? [{ label: 'Găuri', tool: vectorOps.drill.tool, slot: true, onApply: (t: CamTool) => setVectorOps(o => ({ ...o, drill: { ...o.drill, tool: t } })) }] : [])
+                ]}
+                vectorSlot={
+                  <VectorPanel
+                    job={camJob}
+                    source={shapeSource}
+                    onSourceChange={setShapeSource}
+                    threshold={maskThreshold}
+                    onThresholdChange={setMaskThreshold}
+                    invertImage={maskInvert}
+                    onInvertImageChange={setMaskInvert}
+                    text={textSpec}
+                    onTextChange={setTextSpec}
+                    ops={vectorOps}
+                    onOpsChange={setVectorOps}
+                    maskUrl={maskUrl}
+                  />
+                }
               />
               {laserGCode && !runState.stale && (
                 <div className="flex gap-2">
@@ -736,6 +907,21 @@ export function App() {
                 onLoadPresetIcon={handleLoadPresetIcon}
                 onFileSelected={handleFile}
               />
+              {mode === 'relief3d' && (
+                <DepthEditor
+                  under={underMap}
+                  retouch={retouch}
+                  onRetouchChange={setRetouch}
+                  layers={layers}
+                  onLayersChange={setLayers}
+                  pieceWmm={imageOptions.widthMm}
+                  pieceHmm={imageOptions.heightMm}
+                  maxDepthMm={imageOptions.maxDepthMm}
+                  sourceCanvas={sourceCanvas}
+                  onUseAsRelief={handleAiAsRelief}
+                  notify={showToast}
+                />
+              )}
             </div>
           </div>
         )}

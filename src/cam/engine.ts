@@ -161,6 +161,138 @@ export function compensateForTool(surface: Grid, tool: CamTool, onProgress?: (f:
   return { ...surface, data: out }
 }
 
+/**
+ * Ce rămâne după o freză care a mers peste tot pe suprafața ei compensată: în fiecare nod,
+ * cel mai de jos punct atins de vreo poziție a frezei (înfășurătoarea de jos a sculei).
+ * Diferența față de suprafața dorită = materialul de rest (colțuri, șanțuri înguste).
+ */
+export function toolEnvelope(comp: Grid, tool: CamTool): Grid {
+  const { nx, ny, data } = comp
+  const out = new Float32Array(nx * ny).fill(Infinity)
+  const kernel = toolKernel(tool, comp.cellX, comp.cellY)
+  for (let k = 0; k < kernel.length; k++) {
+    const { di, dj, h } = kernel[k]
+    const j0 = Math.max(0, -dj), j1 = Math.min(ny, ny - dj)
+    const i0 = Math.max(0, -di), i1 = Math.min(nx, nx - di)
+    for (let j = j0; j < j1; j++) {
+      const row = j * nx
+      const srow = (j + dj) * nx + di
+      for (let i = i0; i < i1; i++) {
+        const v = data[srow + i] + h
+        if (v < out[row + i]) out[row + i] = v
+      }
+    }
+  }
+  for (let k = 0; k < out.length; k++) out[k] = Math.min(0, out[k]) // peste fața lemnului nu e nimic de tăiat
+  return { ...comp, data: out }
+}
+
+/**
+ * Finisare de rest: freza mică merge DOAR unde cea mare a lăsat material (peste prag),
+ * pe rânduri raster, cu o margine de o rază a frezei mici în jurul zonelor.
+ */
+function restMachining(surface: Grid, bigComp: Grid, job: CamJob, smallTool: CamTool, thresholdMm: number, tol: number): { mb: MoveBuffer; areaFrac: number } {
+  const env = toolEnvelope(bigComp, job.finishingTool)
+  const { nx, ny, cellX, cellY } = surface
+  const need = new Uint8Array(nx * ny)
+  let count = 0
+  for (let k = 0; k < need.length; k++) if (env.data[k] - surface.data[k] > thresholdMm) { need[k] = 1; count++ }
+  // dilatare cu raza frezei mici + o celulă: freza intră și iese din zonă pe material deja curat
+  const rr = effectiveDiameter(smallTool) / 2 + Math.max(cellX, cellY)
+  const ri = Math.ceil(rr / cellX), rj = Math.ceil(rr / cellY)
+  const tmp = new Uint8Array(nx * ny), zone = new Uint8Array(nx * ny)
+  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+    let v = 0
+    for (let d = -ri; d <= ri && !v; d++) { const ii = i + d; if (ii >= 0 && ii < nx && need[j * nx + ii]) v = 1 }
+    tmp[j * nx + i] = v
+  }
+  for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) {
+    let v = 0
+    for (let d = -rj; d <= rj && !v; d++) { const jj = j + d; if (jj >= 0 && jj < ny && tmp[jj * nx + i]) v = 1 }
+    zone[j * nx + i] = v
+  }
+
+  const comp = compensateForTool(surface, smallTool)
+  const mb = new MoveBuffer()
+  // pasul lateral: cel cerut, dar nu mai mare decât lasă creste sub prag între rânduri
+  // (sferă de rază r: creasta ≈ s²/8r; V/vârf ascuțit: s/2 / tan(semi-unghi))
+  let step = Math.max(0.02, (effectiveDiameter(smallTool) * smallTool.stepoverPercent) / 100)
+  const half = ((smallTool.tipAngleDeg || 60) * Math.PI) / 360
+  const tipR = smallTool.shape === 'ballnose' ? smallTool.diameterMm / 2 : smallTool.shape === 'taperedball' ? effectiveDiameter(smallTool) / 2 : 0
+  const scallopStep = smallTool.shape === 'vbit' ? 2 * thresholdMm * Math.tan(half) : tipR > 0 ? Math.sqrt(8 * tipR * thresholdMm) : Infinity
+  step = Math.max(0.02, Math.min(step, scallopStep))
+  const rows = rowIndices(ny, cellY, step)
+  // niveluri pe Z, ca la degroșare: freza fină nu ia niciodată mai mult de un pas Z dintr-o trecere
+  const sd = Math.max(0.05, smallTool.stepDownMm)
+  let top = -Infinity, bottom = Infinity
+  for (let k = 0; k < zone.length; k++) {
+    if (!zone[k]) continue
+    if (env.data[k] > top) top = env.data[k]
+    if (comp.data[k] < bottom) bottom = comp.data[k]
+  }
+  const levels: number[] = []
+  for (let L = top - sd; L > bottom + 1e-4; L -= sd) levels.push(L)
+  levels.push(-Infinity) // ultimul nivel: până pe suprafața finală
+  // cel mai înalt material rămas sub freză (după finisare), ca să coboare repede până la 1 mm deasupra lui
+  const R = smallTool.diameterMm / 2
+  const clearAbove = (x: number, y: number) => {
+    let top = -Infinity
+    for (let j = Math.max(0, Math.floor((y - R) / cellY)); j <= Math.min(ny - 1, Math.ceil((y + R) / cellY)); j++) {
+      for (let i = Math.max(0, Math.floor((x - R) / cellX)); i <= Math.min(nx - 1, Math.ceil((x + R) / cellX)); i++) {
+        top = Math.max(top, env.data[j * nx + i])
+      }
+    }
+    return Math.min(job.safeZMm, top + 1)
+  }
+  const linkCells = Math.ceil((2 * step) / cellX) + 1
+  // la nivelul L freza nu coboară sub L (z = max(suprafața compensată, L))
+  const clampTo = (pts: number[], L: number) => {
+    for (let k = 2; k < pts.length; k += 3) if (pts[k] < L) pts[k] = L
+    return pts
+  }
+  let prevLevel = Infinity
+  for (const L of levels) {
+    let forward = true
+    let last: { ri: number; i: number } | null = null
+    rows.forEach((r, ri) => {
+      // doar unde a mai rămas material sub nivelul anterior și există lemn deasupra nivelului curent
+      const runs: Array<[number, number]> = []
+      let s = -1
+      for (let i = 0; i <= nx; i++) {
+        const k = r * nx + i
+        const want = i < nx && zone[k] && comp.data[k] < prevLevel - 1e-4 && env.data[k] > L + 1e-4
+        if (want) { if (s < 0) s = i }
+        else if (s >= 0) { runs.push([s, i - 1]); s = -1 }
+      }
+      if (!forward) runs.reverse()
+      for (const [a, b] of runs) {
+        const from = forward ? a : b, to = forward ? b : a
+        const simple = simplifyPolyline(clampTo(gridLine(comp, surface, smallTool, true, r, from, to), L), tol)
+        if (last && last.ri === ri - 1 && Math.abs(last.i - from) <= linkCells) {
+          // rândul vecin începe aproape de unde s-a terminat cel de dinainte: legătură pe suprafață,
+          // fără ridicare (ca la finisare), întâi pe Y, apoi pe X, tot la nivelul curent
+          const up = clampTo(gridLine(comp, surface, smallTool, false, last.i, rows[ri - 1], r), L)
+          mb.feedPolyline(up.slice(3))
+          if (last.i !== from) mb.feedPolyline(clampTo(gridLine(comp, surface, smallTool, true, r, last.i, from), L).slice(3, -3))
+          mb.feedPolyline(simple)
+        } else {
+          if (mb.started) mb.push(MOVE_RAPID, mb.x, mb.y, job.safeZMm)
+          mb.push(MOVE_RAPID, simple[0], simple[1], job.safeZMm)
+          const clear = clearAbove(simple[0], simple[1])
+          if (clear < job.safeZMm) mb.push(MOVE_RAPID, simple[0], simple[1], clear)
+          mb.push(MOVE_PLUNGE, simple[0], simple[1], simple[2])
+          mb.feedPolyline(simple.slice(3))
+        }
+        last = { ri, i: to }
+      }
+      if (runs.length) forward = !forward
+    })
+    prevLevel = L
+  }
+  if (mb.started) mb.push(MOVE_RAPID, mb.x, mb.y, job.safeZMm)
+  return { mb, areaFrac: count / need.length }
+}
+
 /** Drop-cutter exact într-un punct oarecare (nu doar în noduri) */
 function dropCutterAt(surface: Grid, tool: CamTool, x: number, y: number): number {
   const R = tool.diameterMm / 2
@@ -467,9 +599,14 @@ export function roughingCell(tool: CamTool): number {
 /** Grila de finisare nu e mai rară decât pixelul imaginii: eroarea laterală rămâne sub un pixel */
 export function finishingCell(job: CamJob, imgW: number, imgH: number): number {
   const pixelMm = Math.min(job.widthMm / imgW, job.heightMm / imgH)
-  const t = job.finishingTool
-  const tipLimit = t.shape === 'taperedball' ? effectiveDiameter(t) / 3 : Infinity
-  return Math.max(0.08, Math.min(0.25, t.diameterMm / 16, pixelMm, tipLimit))
+  // grila servește și finisării de rest: se potrivește frezei celei mai fine
+  const tools = job.restEnabled && job.restTool ? [job.finishingTool, job.restTool] : [job.finishingTool]
+  let cell = Math.min(0.25, pixelMm)
+  for (const t of tools) {
+    const tipLimit = t.shape === 'taperedball' ? effectiveDiameter(t) / 3 : Infinity
+    cell = Math.min(cell, t.diameterMm / 16, tipLimit)
+  }
+  return Math.max(0.08, cell)
 }
 
 export function runCam(input: CamInput, onProgress: ProgressFn = () => {}): CamOutput {
@@ -511,6 +648,22 @@ export function runCam(input: CamInput, onProgress: ProgressFn = () => {}): CamO
         stats: computeStats(moves, tool, job)
       })
     })
+
+    if (job.restEnabled && job.restTool) {
+      const small = job.restTool
+      if (effectiveDiameter(small) >= effectiveDiameter(tool) - 1e-6 && small.shape === tool.shape) {
+        warnings.push('Finisarea de rest are nevoie de o freză mai fină decât cea de finisare — n-am generat-o.')
+      } else {
+        onProgress('Finisare de rest: unde n-a ajuns freza mare', 0)
+        const { mb, areaFrac } = restMachining(surface, comp, job, small, Math.max(0.01, job.restThresholdMm ?? 0.1), 0.005)
+        const moves = mb.toArray()
+        if (moves.length) {
+          toolpaths.push({ name: `Finisare de rest ${small.name} (${(areaFrac * 100).toFixed(1)}% din suprafață)`, tool: small, moves, stats: computeStats(moves, small, job) })
+        } else {
+          warnings.push('Freza de finisare ajunge peste tot — finisarea de rest nu e necesară.')
+        }
+      }
+    }
 
     if (!job.roughingEnabled) {
       // la conică contează vârful subțire, nu tija

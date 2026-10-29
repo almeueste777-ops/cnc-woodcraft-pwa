@@ -1,35 +1,41 @@
-# STARE — CNC WoodCraft Studio (actualizat 2026-10-29, noaptea)
+# STARE — CNC WoodCraft Studio (actualizat 2026-10-29, târziu)
 
 ## Unde suntem
-Publicat pe https://almeueste777-ops.github.io/cnc-woodcraft-pwa/ (ramura gh-pages, `npm run deploy`).
-Hărți de adâncime: salvare/încărcare PNG gri pe 16 biți (`utils/depthMapIO.ts`, butonul „Hartă adâncime”
-lângă „Export STL 3D”; un PNG de 16 biți încărcat intră direct ca hartă exactă).
-- Motor CAM (`src/cam/`): drop-cutter cu rafinare adaptivă; degroșare pe niveluri cu adaos 3D;
-  finisare X/Y/încrucișat; freze sferică, dreaptă, V, conică-sferică; decupare cu punți (`cutout.ts`);
-  9 post-procesoare.
-- Împărțire pe bucăți (`tiling.ts`, caseta „Împărțire pe bucăți” din `CamPanel.tsx`): modele de mașini,
-  număr de bucăți ales de mână, schiță peste icoană; „o placă, mutată” sau „plăci separate, lipite”
-  (la îmbinări freza trece o rază peste muchie). Schimbarea împărțirii nu cere recalcul.
-- Vedere 3D (`utils/meshGenerator.ts`): plasă indexată, netedă, până la 800 (relief) / 1000 (simulare)
-  de puncte pe latură; STL făcut doar la descărcare; adâncimea sub mouse citită din harta de înălțimi.
-- Simulator real (`gcodeParser.ts`, `simulator.ts`, `components/MachineSimulator.tsx`): rulează exact
-  G-code-ul trimis; ștampilare din poziția exactă a frezei (pas ≤ 0,25 mm la frezele nedrepte) +
-  urma vârfului; coliziuni G0 verificate pe toate celulele de sub freză și la vârf. Pe trasee reale:
-  0% alarme false, 100% prinse de la 0,3 mm (6 freze); G0 prin lemn netăiat prins și pe piese 1,2 m.
-- Învățare și ajutor: `help/lessons.ts` (10 lecții), `help/knowledge.ts`, `LessonsHub`, `HelpCenter`,
-  `WorkflowGuide`, `PreflightChecklist`.
-- Verificat: tests/mesh-check.ts, tests/sim-check.ts trec (cam-check.ts: motorul CAM neschimbat azi);
-  în Edge pe icoana Vladimirskaya: capturi mărite vechi/nou, împărțire 3018, 0 erori de consolă.
+Publicat pe https://almeueste777-ops.github.io/cnc-woodcraft-pwa/ versiunea c60cbae (ramura gh-pages).
+Lucrul de azi (atelier hartă, AI, V-Carve, rest, calculator) e în copia locală, NEsalvat în git și
+NEpublicat — așteaptă acordul Otiliei.
+
+- Motor CAM relief (`src/cam/engine.ts`): drop-cutter cu rafinare adaptivă; degroșare pe niveluri;
+  finisare X/Y/încrucișat; **finisare de rest** (freză fină doar unde n-a ajuns cea mare, pe niveluri Z,
+  pas lateral limitat de creasta admisă); decupare cu punți (`cutout.ts`); 9 post-procesoare.
+- Lucrări vectoriale ca în V-Carve Pro (`vectorCam.ts` motorul, `vectorJob.ts` ordinea, panoul
+  `components/VectorPanel.tsx`, forma în `utils/shapeMask.ts` din imagine și/sau text cu font):
+  V-carve (cu fund plat golit de freză dreaptă), buzunar, profil cu punți, intrări în rampă, găurire
+  cu retrageri; gravura pe contur veche rămâne. Calculul în worker (`cam.worker.ts`), simulare 3D.
+- Atelier hartă de adâncime (`components/DepthEditor.tsx`, `utils/depthEdit.ts`): straturi (adună, scade,
+  cel mai înalt/jos, înlocuiește; poziție, mărime) din PNG 16 biți / STL / imagine / cupolă / hartă AI;
+  pensulă (ridică, coboară, netezește, nivelează, șterge) cu anulare. Salvate în proiectul .json.
+- Hartă AI din poză (`utils/aiDepth.ts` + `aiDepth.worker.ts`): Depth Anything V2 small (q8, ~27 MB,
+  @huggingface/transformers 4.3.1), descărcată la prima folosire, apoi din memoria browserului.
+- Calculator de avans (`components/FeedCalculator.tsx`): așchie pe dinte după diametru, material, mașină;
+  subțierea așchiei la pas lateral mic (nu la profil/decupare/găuri); „Aplică” pe freză.
+- Hărți PNG 16 biți, împărțire pe bucăți, simulator real din G-code, lecții, ajutor: ca înainte.
+
+## Verificat (2026-10-29)
+Teste: depthedit, vectorjob, vcarve, rest, sim, mesh, depth, cam-check — toate trec. În Edge pe icoana
+Vladimirskaya: pensulă + anulare, strat cupolă, hartă AI (27,3 MB, 18 s), text „IC XC / NIKA” cu V-carve +
+fund plat + profil + găuri → simulatorul real: fără probleme; 0 erori de consolă. Audit Opus: 15 constatări,
+toate reparate sau trecute mai jos.
 
 ## Ce e deschis
-- Netestat pe o mașină fizică reală (doar CNC-ul virtual).
-- Cerute de Otilia, de făcut în ordinea asta: combinare de hărți de adâncime, retușare cu pensula,
-  hartă de adâncime făcută de AI din poză, apoi uneltele din V-Carve Pro (V-carve text/vectori,
-  buzunare, profil, găuri, prelucrare de rest, intrări în rampă, calculator de avans).
-- Plăci separate + decupare cu punți: unele plăci rămân fără punți — doar avertisment în panou.
-- Textele Marlin din knowledge.ts nu sunt verificate pe sursă; FluidNC fără coduri proprii.
-- Lecțiile sunt animații în aplicație (nu fișiere video); videoclipurile YouTube externe sunt în engleză.
-- Cu Z0 pe masă, grosimea lemnului = bază + adâncime; lemn mai gros => mărește Z siguranță.
+- Netestat pe o mașină fizică reală.
+- V-carve: precizia depinde de pixelul formei (~0,08 mm la 200×280); la V-bit îngust în forme foarte mici
+  rămâne ~0,1 mm în vârf (½ pixel / tan). Marginea piesei e tratată ca perete (formă care atinge marginea
+  primește pantă în V până la margine). Buzunar + V-carve pe aceeași formă nu se coordonează (startDepth).
+- Finisarea de rest merge doar pe rânduri X (nu urmează strategia finisării).
+- Plăci separate + decupare cu punți: doar avertisment.
+- Harta AI cere internet la prima folosire (model de pe Hugging Face, motor de pe jsDelivr).
+- Marlin din knowledge.ts neverificat; lecțiile sunt animații, nu filme.
 
 ## Cum se pornește
 `npm run dev` (http://localhost:5173). Teste: vezi README („Verificare motor CAM”).

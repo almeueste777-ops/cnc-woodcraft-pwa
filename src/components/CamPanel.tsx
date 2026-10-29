@@ -5,6 +5,7 @@ import { TOOL_LIBRARY, findTool } from '../cam/toolLibrary'
 import { effectiveDiameter } from '../cam/engine'
 import { autoTileCount, maxToolRadius, tileCount } from '../cam/tiling'
 import { Wrench, Clock, Play, Download, Settings2, AlertTriangle, Cpu, Loader2, X } from 'lucide-react'
+import { FeedCalculator } from './FeedCalculator'
 
 export interface CamRunState {
   running: boolean
@@ -41,6 +42,10 @@ interface CamPanelProps {
   isCNCConnected: boolean
   isStreaming: boolean
   previewUrl?: string | null // imaginea reliefului, pentru schița bucăților
+  extraTools?: Array<{ label: string; tool: CamTool; onApply: (t: CamTool) => void; slot?: boolean }> // frezele lucrărilor vectoriale
+  vectorSlot?: React.ReactNode // panoul lucrărilor vectoriale (V-carve, buzunar, profil, găuri)
+  contourEnabled?: boolean
+  onContourEnabledChange?: (v: boolean) => void
 }
 
 // mașini des întâlnite: cursa utilă X × Y (mm)
@@ -160,7 +165,7 @@ const titleCls = 'text-xs font-bold text-amber-400 flex items-center gap-1.5'
 
 const fmtTime = (min: number) => `${Math.floor(min / 60)}h ${String(Math.round(min % 60)).padStart(2, '0')}m`
 
-const NumField: React.FC<{ label: string; value: number; onChange: (v: number) => void; step?: number; min?: number; max?: number; hint?: string }> = ({ label, value, onChange, step = 1, min, max, hint }) => (
+export const NumField: React.FC<{ label: string; value: number; onChange: (v: number) => void; step?: number; min?: number; max?: number; hint?: string }> = ({ label, value, onChange, step = 1, min, max, hint }) => (
   <label className="flex flex-col gap-0.5 text-[11px] text-stone-400">
     <span>{label}</span>
     <input
@@ -179,7 +184,7 @@ const NumField: React.FC<{ label: string; value: number; onChange: (v: number) =
   </label>
 )
 
-const ToolEditor: React.FC<{ tool: CamTool; onChange: (t: CamTool) => void; allowed?: CamTool['shape'][]; showStepDown?: boolean }> = ({ tool, onChange, allowed, showStepDown = true }) => {
+export const ToolEditor: React.FC<{ tool: CamTool; onChange: (t: CamTool) => void; allowed?: CamTool['shape'][]; showStepDown?: boolean }> = ({ tool, onChange, allowed, showStepDown = true }) => {
   const choices = TOOL_LIBRARY.filter(t => !allowed || allowed.includes(t.shape))
   const set = (patch: Partial<CamTool>) => onChange({ ...tool, ...patch, id: 'custom' })
   return (
@@ -337,6 +342,24 @@ export const CamPanel: React.FC<CamPanelProps> = props => {
             )}
           </div>
 
+          {job.finishingEnabled && (
+            <div className={boxCls}>
+              <label className={`${titleCls} cursor-pointer`}>
+                <input type="checkbox" checked={!!job.restEnabled} onChange={e => setJob({ restEnabled: e.target.checked, restTool: job.restTool ?? findTool('tb05') })} className="accent-amber-500" />
+                2b. Finisare de rest (freză mai fină, doar unde n-a ajuns cea mare)
+              </label>
+              {job.restEnabled && (
+                <>
+                  <ToolEditor tool={job.restTool ?? findTool('tb05')} onChange={t => setJob({ restTool: t })} allowed={['ballnose', 'taperedball', 'vbit']} />
+                  <NumField label="Prag material rămas (mm)" value={job.restThresholdMm ?? 0.1} step={0.02} min={0.01} onChange={v => setJob({ restThresholdMm: Math.max(0.01, v) })} hint="sub atât nu se mai trece cu freza mică" />
+                  <span className="text-[10px] text-stone-500">
+                    Ca la Aspire / V-Carve Pro: aplicația calculează unde freza de finisare n-a încăput (ochi, degete, falduri adânci) și trimite freza fină doar acolo. Economisești ore față de o finisare completă cu freza fină.
+                  </span>
+                </>
+              )}
+            </div>
+          )}
+
           {job.cutout && (
             <div className={boxCls}>
               <label className={`${titleCls} cursor-pointer`}>
@@ -373,13 +396,18 @@ export const CamPanel: React.FC<CamPanelProps> = props => {
           )}
         </>
       ) : (
+        <>
+        {!props.useLaser && props.vectorSlot}
         <div className={boxCls}>
-          <span className={titleCls}>Gravură pe contur</span>
+          <label className={`${titleCls} cursor-pointer`}>
+            <input type="checkbox" checked={props.useLaser || !!props.contourEnabled} disabled={props.useLaser} onChange={e => props.onContourEnabledChange?.(e.target.checked)} className="accent-amber-500" />
+            Gravură pe contur (urmărește liniile imaginii)
+          </label>
           <label className="flex items-center gap-2 text-[11px] text-stone-300">
             <input type="checkbox" checked={props.useLaser} onChange={e => props.onUseLaserChange(e.target.checked)} className="accent-amber-500" />
-            Laser (GRBL, mod M4) în loc de freză
+            Laser (GRBL, mod M4) în loc de freză — doar gravura pe contur
           </label>
-          {props.useLaser ? (
+          {!props.useLaser && !props.contourEnabled ? null : props.useLaser ? (
             <div className="grid grid-cols-2 gap-2">
               <NumField label="Putere laser S" value={props.laserPower} step={50} min={1} onChange={props.onLaserPowerChange} hint="$30 din GRBL (de obicei 1000)" />
               <NumField label="Viteză (mm/min)" value={props.engraveTool.feedRateMmMin} step={100} min={10} onChange={v => props.onEngraveToolChange({ ...props.engraveTool, feedRateMmMin: v })} />
@@ -391,7 +419,19 @@ export const CamPanel: React.FC<CamPanelProps> = props => {
             </>
           )}
         </div>
+        </>
       )}
+
+      <FeedCalculator
+        tools={mode === 'relief3d'
+          ? [
+              ...(job.roughingEnabled ? [{ label: 'Degroșare', tool: job.roughingTool, onApply: (t: CamTool) => setJob({ roughingTool: t }) }] : []),
+              ...(job.finishingEnabled ? [{ label: 'Finisare', tool: job.finishingTool, onApply: (t: CamTool) => setJob({ finishingTool: t }) }] : []),
+              ...(job.finishingEnabled && job.restEnabled && job.restTool ? [{ label: 'Rest', tool: job.restTool, onApply: (t: CamTool) => setJob({ restTool: t }) }] : []),
+              ...(job.cutout?.enabled ? [{ label: 'Decupare', tool: job.cutout.tool, slot: true, onApply: (t: CamTool) => setJob({ cutout: { ...job.cutout!, tool: t } }) }] : [])
+            ]
+          : props.useLaser ? [] : [...(props.contourEnabled ? [{ label: 'Gravură', tool: props.engraveTool, slot: true, onApply: props.onEngraveToolChange }] : []), ...(props.extraTools ?? [])]}
+      />
 
       {/* Progres / erori / avertizări */}
       {runState.running && (
