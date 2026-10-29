@@ -21,6 +21,7 @@ import { PreflightChecklist } from './components/PreflightChecklist'
 import { explainControllerLine, type ControllerCode, type LessonId } from './help/knowledge'
 import { processImageHeightmap } from './utils/imageProcessing'
 import { generateReliefMesh, type MeshResult } from './utils/meshGenerator'
+import { decodeDepthPng16, encodeDepthPng16 } from './utils/depthMapIO'
 import { traceImageToVectors, type VectorContour } from './utils/vectorizer'
 import { generateVectorEngraveGCode } from './utils/gcodeGenerator'
 import { cncController } from './utils/serialConnection'
@@ -166,12 +167,19 @@ export function App() {
 
   // Orice schimbare de imagine/parametri face traseele vechi (dar nu le șterge).
   // Contorul prinde și schimbările făcute ÎN TIMPUL unui calcul.
+  // Împărțirea pe bucăți nu schimbă traseele (doar le taie în fișiere), deci nu le învechește.
+  const { bedXMm: _bx, bedYMm: _by, tileCols: _tc, tileRows: _tr, tileMode: _tm, ...pathSettings } = camJob
+  const pathKey = JSON.stringify(pathSettings)
+  const tiling = useMemo(
+    () => ({ bedXMm: camJob.bedXMm, bedYMm: camJob.bedYMm, tileCols: camJob.tileCols, tileRows: camJob.tileRows, tileMode: camJob.tileMode }),
+    [camJob.bedXMm, camJob.bedYMm, camJob.tileCols, camJob.tileRows, camJob.tileMode]
+  )
   const inputsVersion = useRef(0)
   useEffect(() => {
     inputsVersion.current++
     setRunState(s => (s.stale ? s : { ...s, stale: true }))
     setSimulatedOk(false)
-  }, [heightmapData, camJob, engraveTool, engraveDepthMm, useLaser, laserPower])
+  }, [heightmapData, pathKey, engraveTool, engraveDepthMm, useLaser, laserPower])
 
   // „Mergi la zero” din panoul CNC urcă la înălțimea sigură a lucrării curente
   useEffect(() => {
@@ -227,7 +235,7 @@ export function App() {
       )
       setProcessedCanvas(pCanvas)
       setHeightmapData(hData)
-      setMeshResult(generateReliefMesh(hData, width, height, imageOptions, 360))
+      setMeshResult(generateReliefMesh(hData, width, height, imageOptions, 800))
 
       const vecResult = traceImageToVectors(pCanvas, 128, 0.4, imageOptions.widthMm, imageOptions.heightMm)
       setContours(vecResult.contours)
@@ -285,6 +293,36 @@ export function App() {
         }))
         showToast(`Model 3D încărcat: ${x.toFixed(0)} × ${y.toFixed(0)} × ${z.toFixed(1)} mm (${depth.width}×${depth.height} puncte)`)
         return
+      }
+
+      // hartă de adâncime PNG pe 16 biți: citită cu toată precizia (browserul ar păstra doar 256 de niveluri)
+      if (/\.png$/i.test(file.name)) {
+        const d16 = await decodeDepthPng16(await file.arrayBuffer())
+        if (d16) {
+          let { data, width: dw, height: dh } = d16
+          if (dw > MAX_IMAGE_DIM || dh > MAX_IMAGE_DIM) {
+            const k = MAX_IMAGE_DIM / Math.max(dw, dh)
+            const nw = Math.max(1, Math.round(dw * k)), nh = Math.max(1, Math.round(dh * k))
+            const small = new Float32Array(nw * nh)
+            for (let y = 0; y < nh; y++) for (let x = 0; x < nw; x++) {
+              small[y * nw + x] = data[Math.min(dh - 1, Math.floor((y + 0.5) / k)) * dw + Math.min(dw - 1, Math.floor((x + 0.5) / k))]
+            }
+            data = small; dw = nw; dh = nh
+          }
+          const depth: DepthSource = { data, width: dw, height: dh, name: file.name, sizeMm: { x: 0, y: 0, z: 0 } }
+          resetResults()
+          setDepthSource(depth)
+          setSourceCanvas(depthToCanvas(depth))
+          setImageOptions(prev => ({
+            ...prev,
+            reliefMode: 'depthmap',
+            heightMm: Math.round(prev.widthMm / (dw / dh)),
+            blurRadius: 0, edgeSharpen: 0, haloBoost: 0, contrast: 100, brightness: 0, gamma: 1, invert: false,
+            frameStyle: 'none', frameWidthMm: 0
+          }))
+          showToast(`Hartă de adâncime pe 16 biți încărcată (${dw}×${dh}, 65 536 de niveluri)`)
+          return
+        }
       }
 
       const img = await loadImageFile(file)
@@ -387,7 +425,7 @@ export function App() {
       )
       setToolpaths(out.toolpaths)
       if (out.simulation) {
-        setSimMesh(generateReliefMesh(out.simulation.heightmap, out.simulation.width, out.simulation.height, imageOptions, 360))
+        setSimMesh(generateReliefMesh(out.simulation.heightmap, out.simulation.width, out.simulation.height, imageOptions, 1000))
         setShowSim(true)
       }
       setRunState({ running: false, stage: '', fraction: 1, error: null, warnings: out.warnings, stale: inputsVersion.current !== versionAtStart })
@@ -408,18 +446,29 @@ export function App() {
   // seturi de fișiere: piesa întreagă sau câte unul pe bucată, dacă piesa nu încape pe mașină
   const simSets: SimSet[] = useMemo(() => {
     if (laserGCode || !toolpaths.length) return []
-    const job = toolpathJob ?? camJob
+    // traseele cu job-ul de la calcul, împărțirea cu setările de acum
+    const job = { ...(toolpathJob ?? camJob), ...tiling }
     const { cols, rows } = tileCount(job, job.bedXMm ?? 0, job.bedYMm ?? 0)
     if (cols * rows === 1) {
       return [{ label: 'Piesa întreagă', job, toolpaths, files: planOutputFiles(toolpaths, job, postId, baseName, forceSeparate) }]
     }
     return splitIntoTiles(toolpaths, job, job.bedXMm ?? 0, job.bedYMm ?? 0).map(t => ({
-      label: `Bucata ${t.index} (coloana ${t.col}, rândul ${t.row})`,
+      label: `${job.tileMode === 'separateBoards' ? 'Placa' : 'Bucata'} ${t.index} (coloana ${t.col}, rândul ${t.row})`,
       job: t.job,
       toolpaths: t.toolpaths,
-      files: planOutputFiles(t.toolpaths, t.job, postId, `${baseName}_bucata${t.index}`, forceSeparate)
+      files: planOutputFiles(t.toolpaths, t.job, postId, `${baseName}_${job.tileMode === 'separateBoards' ? 'placa' : 'bucata'}${t.index}`, forceSeparate)
     }))
-  }, [laserGCode, toolpaths, toolpathJob, camJob, postId, baseName, forceSeparate])
+  }, [laserGCode, toolpaths, toolpathJob, camJob, tiling, postId, baseName, forceSeparate])
+  // imaginea icoanei, micșorată, pentru schița bucăților
+  const tilePreviewUrl = useMemo(() => {
+    if (!sourceCanvas) return null
+    const s = Math.min(1, 320 / Math.max(sourceCanvas.width, sourceCanvas.height))
+    const c = document.createElement('canvas')
+    c.width = Math.max(1, Math.round(sourceCanvas.width * s))
+    c.height = Math.max(1, Math.round(sourceCanvas.height * s))
+    c.getContext('2d')?.drawImage(sourceCanvas, 0, 0, c.width, c.height)
+    return c.toDataURL('image/jpeg', 0.8)
+  }, [sourceCanvas])
   const outputFiles: PlannedFile[] = useMemo(() => {
     if (laserGCode) return [{ name: `${baseName}_laser.nc`, render: () => laserGCode }]
     return simSets.flatMap(s => s.files)
@@ -430,7 +479,7 @@ export function App() {
     [simSets]
   )
   // altă mașină / alt mod de împărțire = alt G-code, care trebuie verificat din nou
-  useEffect(() => { setSimulatedOk(false) }, [postId, forceSeparate])
+  useEffect(() => { setSimulatedOk(false) }, [postId, forceSeparate, tiling])
 
   // Descărcare fișiere
   const downloadBlob = (blob: Blob, filename: string) => {
@@ -477,7 +526,14 @@ export function App() {
   const handleDownloadSTL = () => {
     const m = showSim && simMesh ? simMesh : meshResult
     if (!m) return
-    downloadBlob(m.stlBlob, `${showSim && simMesh ? 'simulare_frezare' : 'sculptura_3d'}_${imageOptions.widthMm}x${imageOptions.heightMm}mm.stl`)
+    downloadBlob(m.getStlBlob(), `${showSim && simMesh ? 'simulare_frezare' : 'sculptura_3d'}_${imageOptions.widthMm}x${imageOptions.heightMm}mm.stl`)
+  }
+
+  // harta de adâncime a reliefului proiectat (nu a simulării), PNG gri 16 biți, alb = sus
+  const handleDownloadDepth = async () => {
+    if (!heightmapData || !processedCanvas) return
+    const blob = await encodeDepthPng16(heightmapData, processedCanvas.width, processedCanvas.height)
+    downloadBlob(blob, `harta_adancime_${imageOptions.widthMm}x${imageOptions.heightMm}x${imageOptions.maxDepthMm}mm_16bit.png`)
   }
 
   const handleDownloadSVG = () => {
@@ -613,7 +669,7 @@ export function App() {
         ) : mode === 'controller' ? (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <div className="lg:col-span-2">
-              <Viewer3D meshResult={viewerMesh} woodType={woodType} onWoodTypeChange={setWoodType} onDownloadSTL={handleDownloadSTL} />
+              <Viewer3D meshResult={viewerMesh} woodType={woodType} onWoodTypeChange={setWoodType} onDownloadSTL={handleDownloadSTL} onDownloadDepth={handleDownloadDepth} />
             </div>
             <div>
               <CNCJogController />
@@ -623,7 +679,7 @@ export function App() {
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
             <div className="lg:col-span-7 flex flex-col gap-4">
               {mode === 'relief3d' ? (
-                <Viewer3D meshResult={viewerMesh} woodType={woodType} onWoodTypeChange={setWoodType} onDownloadSTL={handleDownloadSTL} />
+                <Viewer3D meshResult={viewerMesh} woodType={woodType} onWoodTypeChange={setWoodType} onDownloadSTL={handleDownloadSTL} onDownloadDepth={handleDownloadDepth} />
               ) : (
                 <Viewer2D
                   processedCanvas={processedCanvas}
@@ -663,6 +719,7 @@ export function App() {
                 onSendToCNC={handleSendToCNC}
                 isCNCConnected={cncStatus.connected}
                 isStreaming={cncController.streaming}
+                previewUrl={tilePreviewUrl}
               />
               {laserGCode && !runState.stale && (
                 <div className="flex gap-2">

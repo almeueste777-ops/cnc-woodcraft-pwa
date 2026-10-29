@@ -16,19 +16,23 @@ interface Viewer3DProps {
   woodType: WoodTextureType
   onWoodTypeChange: (type: WoodTextureType) => void
   onDownloadSTL: () => void
+  onDownloadDepth?: () => void
 }
 
 export const Viewer3D: React.FC<Viewer3DProps> = ({
   meshResult,
   woodType,
   onWoodTypeChange,
-  onDownloadSTL
+  onDownloadSTL,
+  onDownloadDepth
 }) => {
   const mountRef = useRef<HTMLDivElement>(null)
   const sceneRef = useRef<THREE.Scene | null>(null)
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null)
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
   const meshRef = useRef<THREE.Mesh | null>(null)
+  const meshResultRef = useRef<MeshResult | null>(null)
+  useEffect(() => { meshResultRef.current = meshResult }, [meshResult])
   const dirLightRef = useRef<THREE.DirectionalLight | null>(null)
 
   const [lightAngle, setLightAngle] = useState(45)
@@ -173,6 +177,7 @@ export const Viewer3D: React.FC<Viewer3DProps> = ({
     dirLight.castShadow = true
     dirLight.shadow.mapSize.width = 2048
     dirLight.shadow.mapSize.height = 2048
+    dirLight.shadow.normalBias = 0.4 // fără „solzi” de umbră pe relief
     scene.add(dirLight)
     dirLightRef.current = dirLight
 
@@ -236,25 +241,50 @@ export const Viewer3D: React.FC<Viewer3DProps> = ({
     window.addEventListener('pointerup', onPointerUp)
     dom.addEventListener('wheel', onWheel, { passive: false })
 
-    // Raycaster pentru citire adâncime la hover (Inspector)
+    // Citirea adâncimii sub mouse (Inspector). Raza se urmărește direct pe harta de înălțimi:
+    // intersecția cu un milion de triunghiuri ar costa ~100 ms la fiecare mișcare a mouse-ului.
     const raycaster = new THREE.Raycaster()
     const mouse = new THREE.Vector2()
+    const inv = new THREE.Matrix4()
+    let hoverQueued = false
+    let lastEvent: MouseEvent | null = null
 
-    const onHoverInspect = (e: MouseEvent) => {
-      if (!meshRef.current || isDragging) return
+    const inspect = () => {
+      hoverQueued = false
+      const e = lastEvent
+      const mesh = meshRef.current, mr = meshResultRef.current
+      if (!e || !mesh || !mr || isDragging) return
       const rect = dom.getBoundingClientRect()
       mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1
       mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1
-
       raycaster.setFromCamera(mouse, camera)
-      const hits = raycaster.intersectObject(meshRef.current)
-      if (hits.length > 0) {
-        // Z local al modelului
-        const localPoint = hits[0].point.clone().applyMatrix4(meshRef.current.matrixWorld.clone().invert())
-        setHoverDepthMm(Math.round(localPoint.z * 10) / 10)
-      } else {
-        setHoverDepthMm(null)
+      inv.copy(mesh.matrixWorld).invert()
+      const ray = raycaster.ray.clone().applyMatrix4(inv)
+      const { origin: o, direction: d } = ray
+      const zTop = mr.dimensions.z
+      // de la planul de sus al piesei în jos, cu pași de 0,25 mm, apoi înjumătățire
+      const tStart = d.z < -1e-6 ? Math.max(0, (zTop - o.z) / d.z) : 0
+      const step = 0.25
+      let prev = tStart, hit = -1
+      for (let k = 0; k < 6000; k++) {
+        const t = tStart + k * step
+        const x = o.x + d.x * t, y = o.y + d.y * t, z = o.z + d.z * t
+        if (z < -1) break
+        if (z <= mr.surfaceZAt(x, y)) { hit = t; break }
+        prev = t
       }
+      if (hit < 0) { setHoverDepthMm(null); return }
+      let a = prev, b = hit
+      for (let k = 0; k < 12; k++) {
+        const m = (a + b) / 2
+        if (o.z + d.z * m <= mr.surfaceZAt(o.x + d.x * m, o.y + d.y * m)) b = m
+        else a = m
+      }
+      setHoverDepthMm(Math.round((o.z + d.z * b) * 10) / 10)
+    }
+    const onHoverInspect = (e: MouseEvent) => {
+      lastEvent = e
+      if (!hoverQueued) { hoverQueued = true; requestAnimationFrame(inspect) }
     }
     dom.addEventListener('mousemove', onHoverInspect)
 
@@ -284,7 +314,9 @@ export const Viewer3D: React.FC<Viewer3DProps> = ({
       dom.removeEventListener('wheel', onWheel)
       dom.removeEventListener('mousemove', onHoverInspect)
       window.removeEventListener('resize', onResize)
+      dirLight.shadow.map?.dispose()
       renderer.dispose()
+      renderer.forceContextLoss()
     }
   }, [])
 
@@ -294,14 +326,18 @@ export const Viewer3D: React.FC<Viewer3DProps> = ({
 
     if (meshRef.current) {
       sceneRef.current.remove(meshRef.current)
-      meshRef.current.geometry.dispose()
-      if (Array.isArray(meshRef.current.material)) {
-        meshRef.current.material.forEach(m => m.dispose())
-      } else {
-        meshRef.current.material.dispose()
+      // geometria se eliberează doar când se schimbă plasa (altfel s-ar retrimite zeci de MB
+      // plăcii video la fiecare clic pe o esență de lemn)
+      if (meshRef.current.geometry !== meshResult.geometry) meshRef.current.geometry.dispose()
+      const mats = Array.isArray(meshRef.current.material) ? meshRef.current.material : [meshRef.current.material]
+      for (const m of mats) {
+        ;(m as THREE.MeshStandardMaterial).map?.dispose()
+        m.dispose()
       }
       meshRef.current = null
     }
+    // culorile „Topo” ocupă memorie video doar cât e aleasă harta Topo
+    if (woodType !== 'topo' && meshResult.geometry.getAttribute('color')) meshResult.geometry.deleteAttribute('color')
 
     let material: THREE.Material
 
@@ -323,14 +359,40 @@ export const Viewer3D: React.FC<Viewer3DProps> = ({
         roughness: 0.7,
         metalness: 0.05
       })
+    } else if (woodType === 'topo') {
+      // culoarea după înălțimea reliefului (fără placa de bază): cel mai adânc = mov, suprafața = roșu
+      const geo = meshResult.geometry
+      if (!geo.getAttribute('color')) {
+        const pos = geo.getAttribute('position')
+        const base = meshResult.baseMm
+        const span = Math.max(0.001, meshResult.dimensions.z - base)
+        const stops = [[0x1e, 0x1b, 0x4b], [0x02, 0x84, 0xc7], [0x10, 0xb9, 0x81], [0xf5, 0x9e, 0x0b], [0xef, 0x44, 0x44]]
+        const colors = new Float32Array(pos.count * 3)
+        for (let i = 0; i < pos.count; i++) {
+          const f = Math.max(0, Math.min(1, (pos.getZ(i) - base) / span)) * (stops.length - 1)
+          const k = Math.min(stops.length - 2, Math.floor(f)), r = f - k
+          for (let c = 0; c < 3; c++) colors[i * 3 + c] = (stops[k][c] + (stops[k + 1][c] - stops[k][c]) * r) / 255
+        }
+        geo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+      }
+      material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.3, metalness: 0.08 })
     } else {
       const tex = createTexture(woodType)
       material = new THREE.MeshStandardMaterial({
         map: tex,
-        roughness: woodType === 'topo' ? 0.3 : 0.5,
+        roughness: 0.5,
         metalness: 0.08,
         flatShading: false
       })
+    }
+
+    // umbra trebuie să acopere toată piesa (harta de umbră rămâne aceeași, doar cadrul se schimbă)
+    if (dirLightRef.current) {
+      const half = Math.max(meshResult.dimensions.x, meshResult.dimensions.y) * 0.75
+      const cam = dirLightRef.current.shadow.camera
+      cam.left = -half; cam.right = half; cam.top = half; cam.bottom = -half
+      cam.near = 1; cam.far = 1200
+      cam.updateProjectionMatrix()
     }
 
     const mesh = new THREE.Mesh(meshResult.geometry, material)
@@ -444,6 +506,17 @@ export const Viewer3D: React.FC<Viewer3DProps> = ({
             <Download className="w-3.5 h-3.5" />
             Export STL 3D
           </button>
+          {onDownloadDepth && (
+            <button
+              onClick={onDownloadDepth}
+              disabled={!meshResult}
+              className="flex items-center gap-1.5 bg-[#25221d] hover:bg-[#322e27] border border-[#443e35] text-stone-200 px-3 py-1.5 rounded-xl text-xs font-bold shadow-md transition disabled:opacity-50"
+              title="Hartă de adâncime PNG gri pe 16 biți (alb = sus), pentru Aspire, ArtCAM, Carveco, Photoshop"
+            >
+              <Download className="w-3.5 h-3.5 text-amber-500" />
+              Hartă adâncime
+            </button>
+          )}
         </div>
       </div>
 

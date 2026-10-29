@@ -97,7 +97,9 @@ export const MachineSimulator: React.FC<Props> = ({ program, emptyHint, compact 
   useEffect(() => {
     const container = mountRef.current
     if (!container || !program || !program.moves.length) return
-    const sim = new StockSimulator(program)
+    // ~0,5 mm pe o icoană de 30×40 cm (minimum 0,2 mm): la mărire se văd urmele frezei, nu pătrățele;
+    // mai dens ar face derularea înapoi (re-simulare de la început) să dureze secunde
+    const sim = new StockSimulator(program, 500_000)
     simRef.current = sim
     setEvents([])
     setFullCheck(null)
@@ -136,24 +138,46 @@ export const MachineSimulator: React.FC<Props> = ({ program, emptyHint, compact 
     const woodDeep = new THREE.Color(0xc9a77a)
     const pos = geo.attributes.position as THREE.BufferAttribute
     const col = geo.attributes.color as THREE.BufferAttribute
+    const nor = geo.attributes.normal as THREE.BufferAttribute
     const tmp = new THREE.Color()
+    const { nx, ny, data, cellX, cellY } = sim
+    const pa = pos.array as Float32Array, ca = col.array as Float32Array, na = nor.array as Float32Array
     const writeRegion = (i0: number, i1: number, j0: number, j1: number) => {
       for (let j = j0; j <= j1; j++) {
-        const row = (sim.ny - 1 - j) * sim.nx // rândul 0 al planului e sus
+        const row = (ny - 1 - j) * nx // rândul 0 al planului e sus
         for (let i = i0; i <= i1; i++) {
-          const z = sim.data[j * sim.nx + i]
+          const z = data[j * nx + i]
           const v = row + i
-          pos.setZ(v, z)
+          pa[v * 3 + 2] = z
           if (z > -0.02) tmp.copy(woodTop)
           else tmp.copy(woodCut).lerp(woodDeep, Math.min(1, -z / Math.max(1, D)))
-          col.setXYZ(v, tmp.r, tmp.g, tmp.b)
+          ca[v * 3] = tmp.r; ca[v * 3 + 1] = tmp.g; ca[v * 3 + 2] = tmp.b
         }
       }
-      pos.needsUpdate = true
-      col.needsUpdate = true
+      // normalele din pantele grilei, doar în zona schimbată și un rând în jur (pe toată plasa ar
+      // costa zeci de ms la fiecare cadru); pe margini, diferență pe o singură parte
+      const ja = Math.max(0, j0 - 1), jb = Math.min(ny - 1, j1 + 1)
+      for (let j = ja; j <= jb; j++) {
+        const row = (ny - 1 - j) * nx
+        const jm = Math.max(0, j - 1), jp = Math.min(ny - 1, j + 1)
+        for (let i = Math.max(0, i0 - 1); i <= Math.min(nx - 1, i1 + 1); i++) {
+          const im = Math.max(0, i - 1), ip = Math.min(nx - 1, i + 1)
+          const gx = -(data[j * nx + ip] - data[j * nx + im]) / ((ip - im) * cellX)
+          const gy = -(data[jp * nx + i] - data[jm * nx + i]) / ((jp - jm) * cellY)
+          const inv = 1 / Math.sqrt(gx * gx + gy * gy + 1)
+          const v = (row + i) * 3
+          na[v] = gx * inv; na[v + 1] = gy * inv; na[v + 2] = inv
+        }
+      }
+      // se trimit plăcii video doar rândurile schimbate (sunt consecutive în memorie);
+      // three.js golește lista de intervale după fiecare trimitere
+      const start = (ny - 1 - jb) * nx * 3, count = (jb - ja + 1) * nx * 3
+      for (const a of [pos, col, nor]) {
+        a.addUpdateRange(start, count)
+        a.needsUpdate = true
+      }
     }
-    writeRegion(0, sim.nx - 1, 0, sim.ny - 1)
-    geo.computeVertexNormals()
+    writeRegion(0, nx - 1, 0, ny - 1)
     const stock = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8, metalness: 0.0, side: THREE.DoubleSide }))
     scene.add(stock)
 
@@ -221,7 +245,6 @@ export const MachineSimulator: React.FC<Props> = ({ program, emptyHint, compact 
 
     let last = performance.now()
     let lastUi = 0
-    let lastNormals = 0
     let anim = 0
     let reportedEvents = 0
     const loop = (now: number) => {
@@ -251,7 +274,6 @@ export const MachineSimulator: React.FC<Props> = ({ program, emptyHint, compact 
       if (d.i1 >= d.i0) {
         writeRegion(Math.max(0, d.i0), Math.min(sim.nx - 1, d.i1), Math.max(0, d.j0), Math.min(sim.ny - 1, d.j1))
         sim.clearDirty()
-        if (now - lastNormals > 180) { geo.computeVertexNormals(); lastNormals = now }
       }
 
       if (st.follow) {
@@ -325,7 +347,8 @@ export const MachineSimulator: React.FC<Props> = ({ program, emptyHint, compact 
   const runFullCheck = () => {
     if (!program) return
     // verificare completă pe o copie separată, fără să strice animația
-    const check = new StockSimulator(program, 120_000)
+    // 400k celule: pe 30×40 cm prinde orice G0 care intră ≥0,6 mm în lemn, fără alarme false (~2 s)
+    const check = new StockSimulator(program, 400_000)
     check.runAll()
     const found = check.events.filter(e => e.kind !== 'toolChange')
     setFullCheck(found)

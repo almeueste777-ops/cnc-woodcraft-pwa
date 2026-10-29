@@ -95,7 +95,9 @@ pauză, schimbare de sculă (M6) sau **câte un fișier pe freză** (GRBL, Marli
 ### Verificare motor CAM
 ```
 npx tsx tests/cam-check.ts      # fără gouging (sferică, conică, V), degroșare, G-code pe fiecare post (lent: ~10 min)
-npx tsx tests/sim-check.ts      # simulator, decupare, bucăți, fișier greșit prins, arce G2/G3
+npx tsx tests/sim-check.ts      # simulator, decupare, bucăți și plăci separate, coliziuni G0, fișier greșit prins, arce G2/G3
+npx tsx tests/mesh-check.ts     # plasa 3D / STL: corp închis, normale, volum, timp
+npx tsx tests/depth-check.ts    # hartă de adâncime PNG 16 biți: scriere/citire fără pierdere
 npx tsx tests/sim-file.ts f.nc  # verifică orice fișier G-code din linia de comandă
 ```
 Verifică exact (pe segmente, la 0.05 mm) că nicio poziție a frezei nu intră în relieful final, că degroșarea

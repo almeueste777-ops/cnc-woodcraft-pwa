@@ -1,9 +1,14 @@
 /**
- * Împărțire pe plăci (tiling): o piesă mai mare decât cursa mașinii se lucrează pe
- * bucăți. Fiecare bucată are originea în colțul ei din stânga-jos; între bucăți placa
- * se mută (sau freza se re-zerează pe colțul bucății următoare, marcat pe lemn).
- * Traseele se taie la marginea bucății: la ieșire freza urcă la Z siguranță, la
- * intrare coboară din nou pe verticală.
+ * Împărțire pe bucăți (tiling): o piesă mai mare decât cursa mașinii se lucrează pe
+ * bucăți. Fiecare bucată are originea în colțul ei din stânga-jos. Două feluri:
+ *  - moveBoard: o singură placă mare, mutată sub mașină (sau freza re-zerată pe colțul
+ *    bucății următoare, marcat pe lemn). Traseele se taie exact la marginea bucății:
+ *    fâșia de lângă margine o termină bucata vecină.
+ *  - separateBoards: plăci separate, sculptate pe rând și lipite la sfârșit. Aici nu
+ *    există bucată vecină pe aceeași placă, deci la marginile interioare freza trece
+ *    cu centrul încă o rază dincolo de margine (prin aer), ca relieful să fie complet
+ *    până în muchie și să se continue fără treaptă la îmbinare.
+ * La ieșirea din bucată freza urcă la Z siguranță, la intrare coboară pe verticală.
  */
 import type { CamJob, Toolpath } from './types'
 import { MOVE_PLUNGE, MOVE_RAPID } from './types'
@@ -21,16 +26,40 @@ export interface Tile {
   toolpaths: Toolpath[]
 }
 
-export function tileCount(job: CamJob, bedX: number, bedY: number): { cols: number; rows: number } {
-  if (!(bedX > 0) || !(bedY > 0)) return { cols: 1, rows: 1 }
-  return { cols: Math.max(1, Math.ceil(job.widthMm / bedX - 1e-9)), rows: Math.max(1, Math.ceil(job.heightMm / bedY - 1e-9)) }
+/** Raza celei mai mari freze din lucrare (la plăci separate freza iese atât peste muchie) */
+export function maxToolRadius(job: CamJob): number {
+  const r = [job.finishingEnabled ? job.finishingTool.diameterMm : 0, job.roughingEnabled ? job.roughingTool.diameterMm : 0, job.cutout?.enabled ? job.cutout.tool.diameterMm : 0]
+  return Math.max(0, ...r) / 2
 }
 
-function clipToolpath(tp: Toolpath, job: CamJob, x0: number, y0: number, x1: number, y1: number): Toolpath {
+export function tileCount(job: CamJob, bedX: number, bedY: number): { cols: number; rows: number } {
+  // la plăci separate, o bucată din mijloc are nevoie de lățimea ei + câte o rază de freză pe
+  // fiecare parte (freza trece peste muchie): altfel ar ieși din cursa mașinii
+  const extra = job.tileMode === 'separateBoards' ? 2 * maxToolRadius(job) : 0
+  const need = (size: number, bed: number) => {
+    if (!(bed > 0)) return 1
+    if (size <= bed + 1e-9) return 1
+    return Math.ceil(size / Math.max(1, bed - extra) - 1e-9)
+  }
+  // cerut de mână: doar mai multe bucăți decât e nevoie, niciodată mai puține (n-ar încăpea)
+  const want = (n: number | undefined) => (n && n > 0 ? Math.min(20, Math.floor(n)) : 0)
+  return {
+    cols: Math.max(1, need(job.widthMm, bedX), want(job.tileCols)),
+    rows: Math.max(1, need(job.heightMm, bedY), want(job.tileRows))
+  }
+}
+
+/** Cel mai mic număr de bucăți care încap pe mașină (cursa 0 = nelimitat) */
+export function autoTileCount(job: CamJob): { cols: number; rows: number } {
+  return tileCount({ ...job, tileCols: 0, tileRows: 0 }, job.bedXMm ?? 0, job.bedYMm ?? 0)
+}
+
+// x0..x1, y0..y1 = bucata; cx0..cy1 = dreptunghiul în care are voie centrul frezei
+function clipToolpath(tp: Toolpath, job: CamJob, x0: number, y0: number, cx0: number, cy0: number, cx1: number, cy1: number): Toolpath {
   const m = tp.moves
   const out: number[] = []
   const safe = job.safeZMm
-  const inside = (x: number, y: number) => x >= x0 - 1e-6 && x <= x1 + 1e-6 && y >= y0 - 1e-6 && y <= y1 + 1e-6
+  const inside = (x: number, y: number) => x >= cx0 - 1e-6 && x <= cx1 + 1e-6 && y >= cy0 - 1e-6 && y <= cy1 + 1e-6
   let px = m[1], py = m[2], pz = safe
   // „down” = freza e într-o poziție continuă cu traseul original, în interiorul bucății;
   // altfel e sus, la Z siguranță, într-un punct oarecare
@@ -66,7 +95,7 @@ function clipToolpath(tp: Toolpath, job: CamJob, x0: number, y0: number, x1: num
       else { if (r < ta) return false; if (r < tb) tb = r }
       return true
     }
-    const visible = clip(-dx, px - x0) && clip(dx, x1 - px) && clip(-dy, py - y0) && clip(dy, y1 - py)
+    const visible = clip(-dx, px - cx0) && clip(dx, cx1 - px) && clip(-dy, py - cy0) && clip(dy, cy1 - py)
     if (visible && tb >= ta) {
       const ax = px + dx * ta, ay = py + dy * ta, az = pz + (z - pz) * ta
       const bx = px + dx * tb, by = py + dy * tb, bz = pz + (z - pz) * tb
@@ -92,15 +121,23 @@ function clipToolpath(tp: Toolpath, job: CamJob, x0: number, y0: number, x1: num
 export function splitIntoTiles(toolpaths: Toolpath[], job: CamJob, bedX: number, bedY: number): Tile[] {
   const { cols, rows } = tileCount(job, bedX, bedY)
   const tw = job.widthMm / cols, th = job.heightMm / rows
+  const separate = job.tileMode === 'separateBoards'
   const tiles: Tile[] = []
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
       const x0 = c * tw, y0 = r * th
       // originea fiecărei bucăți e colțul ei din stânga-jos
       const tileJob: CamJob = { ...job, widthMm: tw, heightMm: th, xyOrigin: 'bottomLeft' }
+      const clipped = toolpaths.map(tp => {
+        // plăci separate: la marginile interioare centrul frezei trece o rază dincolo de muchie
+        const R = separate ? tp.tool.diameterMm / 2 : 0
+        return clipToolpath(tp, tileJob, x0, y0,
+          c > 0 ? x0 - R : x0, r > 0 ? y0 - R : y0,
+          c < cols - 1 ? x0 + tw + R : x0 + tw, r < rows - 1 ? y0 + th + R : y0 + th)
+      })
       tiles.push({
         index: tiles.length + 1, col: c + 1, row: r + 1, x0, y0, widthMm: tw, heightMm: th, job: tileJob,
-        toolpaths: toolpaths.map(tp => clipToolpath(tp, tileJob, x0, y0, x0 + tw, y0 + th)).filter(tp => tp.moves.length > 0)
+        toolpaths: clipped.filter(tp => tp.moves.length > 0)
       })
     }
   }

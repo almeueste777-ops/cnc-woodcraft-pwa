@@ -3,7 +3,7 @@ import type { CamJob, CamTool, PostId, Toolpath, XYOrigin } from '../cam/types'
 import { POST_PROCESSORS, getPost } from '../cam/postProcessors'
 import { TOOL_LIBRARY, findTool } from '../cam/toolLibrary'
 import { effectiveDiameter } from '../cam/engine'
-import { tileCount } from '../cam/tiling'
+import { autoTileCount, maxToolRadius, tileCount } from '../cam/tiling'
 import { Wrench, Clock, Play, Download, Settings2, AlertTriangle, Cpu, Loader2, X } from 'lucide-react'
 
 export interface CamRunState {
@@ -40,6 +40,118 @@ interface CamPanelProps {
   onSendToCNC: (index: number) => void
   isCNCConnected: boolean
   isStreaming: boolean
+  previewUrl?: string | null // imaginea reliefului, pentru schița bucăților
+}
+
+// mașini des întâlnite: cursa utilă X × Y (mm)
+const MACHINES: Array<{ label: string; x: number; y: number }> = [
+  { label: '3018', x: 300, y: 180 },
+  { label: '3040', x: 300, y: 400 },
+  { label: '6040', x: 600, y: 400 },
+  { label: '4040', x: 400, y: 400 },
+  { label: '6090', x: 600, y: 900 },
+  { label: '1212', x: 1200, y: 1200 },
+  { label: '1325', x: 1300, y: 2500 },
+]
+
+/** Împărțirea pe bucăți: câte bucăți, ce mărime, cum se lucrează, cu schița peste imagine */
+const TilingBox: React.FC<{ job: CamJob; setJob: (p: Partial<CamJob>) => void; previewUrl?: string | null }> = ({ job, setJob, previewUrl }) => {
+  const auto = autoTileCount(job)
+  const { cols, rows } = tileCount(job, job.bedXMm ?? 0, job.bedYMm ?? 0)
+  const tw = job.widthMm / cols, th = job.heightMm / rows
+  const separate = job.tileMode === 'separateBoards'
+  const bedX = job.bedXMm ?? 0, bedY = job.bedYMm ?? 0
+  const tooBig = auto.cols * auto.rows > 1
+  // schița: lățimea fixă, înălțimea după proporția piesei
+  const sw = 260, sh = Math.min(360, sw * (job.heightMm / job.widthMm))
+  const sx = sh / (job.heightMm / job.widthMm) // lățimea efectivă dacă înălțimea a fost limitată
+  return (
+    <div className={boxCls}>
+      <span className={titleCls}>Împărțire pe bucăți (icoane mai mari decât mașina)</span>
+      <div className="flex flex-wrap gap-1">
+        {MACHINES.map(m => (
+          <button
+            key={m.label}
+            onClick={() => setJob({ bedXMm: m.x, bedYMm: m.y })}
+            className={`px-2 py-1 rounded-md text-[11px] font-bold border ${bedX === m.x && bedY === m.y ? 'bg-amber-600 border-amber-500 text-white' : 'bg-[#201d19] border-[#383228] text-stone-300'}`}
+          >
+            {m.label}
+          </button>
+        ))}
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <NumField label="Cursa mașinii X (mm)" value={bedX} step={10} min={0} onChange={v => setJob({ bedXMm: Math.max(0, v) })} hint="0 = nu contează" />
+        <NumField label="Cursa mașinii Y (mm)" value={bedY} step={10} min={0} onChange={v => setJob({ bedYMm: Math.max(0, v) })} hint="cât se mișcă freza, nu masa" />
+        <NumField label="Bucăți pe lățime" value={cols} step={1} min={auto.cols} max={20} onChange={v => setJob({ tileCols: v <= auto.cols ? 0 : v })} hint={`minimum ${auto.cols}`} />
+        <NumField label="Bucăți pe înălțime" value={rows} step={1} min={auto.rows} max={20} onChange={v => setJob({ tileRows: v <= auto.rows ? 0 : v })} hint={`minimum ${auto.rows}`} />
+      </div>
+      <div className="text-[11px] text-stone-300">
+        {tooBig
+          ? <>Piesa de {job.widthMm} × {job.heightMm} mm nu încape pe mașină ({bedX} × {bedY} mm).</>
+          : bedX > 0 && bedY > 0
+            ? <>Piesa încape pe mașină dintr-o bucată.</>
+            : <>Scrie cursa mașinii (sau alege modelul) ca să aflu dacă icoana încape.</>}
+        {cols * rows > 1 && <> Se lucrează în <b className="text-amber-300">{cols * rows} bucăți</b> ({cols} × {rows}), fiecare de <b className="text-amber-300">{tw.toFixed(1)} × {th.toFixed(1)} mm</b>.</>}
+      </div>
+
+      {cols * rows > 1 && (
+        <>
+          <div className="grid grid-cols-2 gap-1.5">
+            {([['moveBoard', 'O placă, mutată', 'O singură placă mare; după fiecare bucată o muți sub mașină.'], ['separateBoards', 'Plăci separate, lipite', 'Fiecare bucată din lemnul ei; le lipești la sfârșit.']] as const).map(([id, label, hint]) => (
+              <button
+                key={id}
+                onClick={() => setJob({ tileMode: id })}
+                title={hint}
+                className={`py-1.5 px-2 rounded-lg text-[11px] font-bold border text-left ${(job.tileMode ?? 'moveBoard') === id ? 'bg-amber-600 border-amber-500 text-white' : 'bg-[#201d19] border-[#383228] text-stone-300'}`}
+              >
+                {label}
+                <span className="block font-normal text-[10px] opacity-80">{hint}</span>
+              </button>
+            ))}
+          </div>
+
+          <svg viewBox={`0 0 ${sx} ${sh}`} style={{ maxWidth: sx }} className="w-full self-center rounded-lg border border-[#3a352c] bg-[#201d19]" role="img" aria-label="Schița bucăților">
+            {previewUrl && <image href={previewUrl} x={0} y={0} width={sx} height={sh} preserveAspectRatio="none" opacity={0.75} />}
+            {Array.from({ length: rows }, (_, r) => Array.from({ length: cols }, (_, c) => {
+              // bucata 1 e stânga-jos (ca originea mașinii); pe ecran rândul de jos e ultimul
+              const index = r * cols + c + 1
+              const x = (c / cols) * sx, y = sh - ((r + 1) / rows) * sh
+              return (
+                <g key={index}>
+                  <rect x={x} y={y} width={sx / cols} height={sh / rows} fill="none" stroke="#f59e0b" strokeWidth={1.5} strokeDasharray={separate ? undefined : '5 3'} />
+                  <circle cx={x + sx / cols / 2} cy={y + sh / rows / 2} r={11} fill="#000a" />
+                  <text x={x + sx / cols / 2} y={y + sh / rows / 2 + 4} textAnchor="middle" fontSize={12} fontWeight={700} fill="#fbbf24">{index}</text>
+                  <circle cx={x + 3} cy={y + sh / rows - 3} r={2.5} fill="#22c55e" />
+                </g>
+              )
+            }))}
+          </svg>
+          <span className="text-[10px] text-stone-500 text-center">Punctul verde = X0 Y0 al fiecărei bucăți (colțul stânga-jos). Bucata 1 e jos-stânga.</span>
+
+          <div className="text-[11px] text-amber-200 bg-amber-950/40 border border-amber-700/50 rounded-lg p-2 flex flex-col gap-1">
+            {separate ? (
+              <>
+                <span>1. Taie {cols * rows} plăci de exact <b>{tw.toFixed(1)} × {th.toFixed(1)} × {job.stockThicknessMm} mm</b>, cu muchiile drepte (la îmbinare nu trebuie să rămână rost).</span>
+                <span>2. Scrie pe spatele fiecărei plăci numărul ei din schiță.</span>
+                <span>3. La fiecare placă: X0 Y0 în colțul stânga-jos, Z0 pe fața ei, apoi trimite fișierele bucății.</span>
+                <span>4. La marginile de îmbinare freza iese cu până la {maxToolRadius(job).toFixed(1)} mm peste muchie, prin aer, la adâncime: e normal, așa relieful merge până în muchie și se continuă pe placa vecină. Lasă acolo {Math.ceil(maxToolRadius(job) + 2)} mm liberi: fără cleme, opritoare sau șuruburi pe muchiile de îmbinare (prinde placa de celelalte muchii sau cu bandă dublu adezivă).</span>
+                {job.cutout?.enabled && (
+                  <span className="text-red-300 font-bold">Atenție: decuparea cu punți e calculată pentru toată icoana. Pe plăci separate unele bucăți rămân fără punți și se desprind la ultima trecere. Oprește decuparea și decupează conturul după lipire, sau lucrează cu „o placă, mutată”.</span>
+                )}
+                <span>5. La sfârșit lipește plăcile pe un panou-suport, în ordinea din schiță, apoi șlefuiește ușor îmbinările.</span>
+              </>
+            ) : (
+              <>
+                <span>1. Trasează pe lemn liniile dintre bucăți ({tw.toFixed(1)} mm pe X, {th.toFixed(1)} mm pe Y), pornind din colțul stânga-jos.</span>
+                <span>2. La fiecare bucată mută placa astfel încât colțul ei stânga-jos să fie în cursa mașinii; X0 Y0 pe acel colț, Z0 pe fața lemnului.</span>
+                <span>3. Trimite fișierele bucății, apoi treci la următoarea, în ordinea numerelor.</span>
+              </>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  )
 }
 
 const inputCls = 'w-full bg-[#201d19] border border-[#3a352c] rounded px-2 py-1 text-white font-mono text-xs'
@@ -186,21 +298,9 @@ export const CamPanel: React.FC<CamPanelProps> = props => {
         <span className="text-[10px] text-stone-500">
           Lemn: {job.widthMm} × {job.heightMm} × {job.stockThicknessMm} mm (din dimensiunile piesei). Fundul reliefului la −{job.maxDepthMm} mm.
         </span>
-        <div className="grid grid-cols-2 gap-2">
-          <NumField label="Cursa mașinii X (mm)" value={job.bedXMm ?? 0} step={10} min={0} onChange={v => setJob({ bedXMm: Math.max(0, v) })} hint="0 = nu contează" />
-          <NumField label="Cursa mașinii Y (mm)" value={job.bedYMm ?? 0} step={10} min={0} onChange={v => setJob({ bedYMm: Math.max(0, v) })} hint="ex. 3018: 300 × 180" />
-        </div>
-        {(() => {
-          const { cols, rows } = tileCount(job, job.bedXMm ?? 0, job.bedYMm ?? 0)
-          return cols * rows > 1 ? (
-            <div className="text-[11px] text-amber-200 bg-amber-950/40 border border-amber-700/50 rounded-lg p-2">
-              Piesa nu încape pe mașină: se lucrează în {cols * rows} bucăți ({cols} pe X × {rows} pe Y), fiecare de
-              {' '}{(job.widthMm / cols).toFixed(0)} × {(job.heightMm / rows).toFixed(0)} mm, cu X0 Y0 în colțul stânga-jos al bucății.
-              Trasează pe lemn liniile dintre bucăți înainte de început.
-            </div>
-          ) : null
-        })()}
       </div>
+
+      <TilingBox job={job} setJob={setJob} previewUrl={props.previewUrl} />
 
       {mode === 'relief3d' ? (
         <>
@@ -363,6 +463,7 @@ export const CamPanel: React.FC<CamPanelProps> = props => {
             <span className="text-[10px] text-stone-400">
               Rulați fișierele în ordine. Între freze: montați freza următoare și refaceți doar Z0.
               {props.outputFiles.some(f => f.name.includes('_bucata')) && ' La o bucată nouă: mutați placa / freza pe colțul stânga-jos al bucății și refaceți X0 Y0 și Z0.'}
+              {props.outputFiles.some(f => f.name.includes('_placa')) && ' La o placă nouă: prindeți-o pe masă, X0 Y0 în colțul ei stânga-jos și Z0 pe fața ei.'}
             </span>
           )}
         </div>

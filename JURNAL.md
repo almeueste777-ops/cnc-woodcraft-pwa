@@ -1,5 +1,6 @@
 # Jurnal (cel mai nou sus)
 
+- 2026-10-29 (noaptea) — La cererea Otiliei („la mărire sculptura arată pixelată”): plasă 3D indexată și densă, simulator mai fin; coliziuni G0 false (depindeau de rețea) eliminate prin ștampilare exactă + verificare pe toate celulele; audit Opus: 8 constatări, reparate. Împărțire pe bucăți: plăci separate, număr ales, schiță, modele de mașini. Al doilea audit Opus: 7 constatări (coliziuni ratate la freze ascuțite/piese mari, cursa depășită la plăci separate, punți, viteză, nume) — reparate sau avertizate. Hărți de adâncime PNG 16 biți (salvare + încărcare). Teste noi: mesh-check, depth-check, cazuri noi în sim-check. Publicat.
 - 2026-10-29 (seara) — Simulator real din G-code, 10 lecții animate cu voce RO, Probleme & Soluții (GRBL), ghid pas cu pas, listă de verificare, freză conică, decupare cu punți, împărțire pe bucăți. Reparat: vârf V „cădea” între noduri (−0,12 mm), overshoot bicubic la trepte, butonul Zero care strica Z0. Audit Opus: 10 defecte reparate. Publicat.
 - 2026-10-29 — Publicat pe GitHub Pages; adăugat gh-pages în devDependencies.
 - 2026-10-29 — Motor CAM profesional (src/cam), post-procesoare, streaming sigur, import STL, proiecte; test motor + test în Edge pe icoană reală; audit Opus, 12 defecte reparate. Nepublicat.

@@ -46,7 +46,14 @@ export interface CamJob {
   // cursa utilă a mașinii; dacă piesa e mai mare, se împarte pe bucăți (0 = nelimitat)
   bedXMm?: number
   bedYMm?: number
+  // împărțire cerută de mână (0 / lipsă = cât cere cursa mașinii); nu scade sub cât e nevoie
+  tileCols?: number
+  tileRows?: number
+  // moveBoard = o singură placă, mutată sub mașină; separateBoards = plăci separate, lipite după
+  tileMode?: TileMode
 }
+
+export type TileMode = 'moveBoard' | 'separateBoards'
 
 // Mișcări: plat [tip, x, y, z, ...], tip 0 = rapid, 1 = avans lucru, 2 = coborâre
 export const MOVE_RAPID = 0

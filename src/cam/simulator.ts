@@ -96,8 +96,6 @@ export function buildProgram(files: ProgramFile[], job: CamJob, toolFor: (t: num
   }
 }
 
-interface Kernel { di: Int16Array; dj: Int16Array; h: Float32Array }
-
 export class StockSimulator {
   readonly nx: number
   readonly ny: number
@@ -111,7 +109,6 @@ export class StockSimulator {
   private stampedX = 0
   private stampedY = 0
   private stampedZ = 0
-  private kernels = new Map<number, Kernel>()
   private lastTool = -1
   private reported = new Set<string>()
   private checkedMove = -1
@@ -126,11 +123,17 @@ export class StockSimulator {
     this.cellX = W / (this.nx - 1)
     this.cellY = H / (this.ny - 1)
     this.data = new Float32Array(this.nx * this.ny)
+    this.tipTrack = new Float32Array(this.nx * this.ny)
     this.reset()
   }
 
+  // cel mai jos Z la care a trecut VÂRFUL unei freze prin dreptul fiecărui nod (± ½ diagonală):
+  // un șanț în V mai îngust decât o celulă nu coboară nodurile, dar vârful a trecut pe acolo
+  private readonly tipTrack: Float32Array
+
   reset() {
     this.data.fill(0)
+    this.tipTrack.fill(Infinity)
     this.events = []
     this.reported.clear()
     this.moveIdx = 0
@@ -148,24 +151,6 @@ export class StockSimulator {
   get currentMove() { return this.moveIdx }
   get totalTime() { const e = this.program.endTime; return e.length ? e[e.length - 1] : 0 }
 
-  private kernel(toolIndex: number): Kernel {
-    let k = this.kernels.get(toolIndex)
-    if (k) return k
-    const tool = this.program.tools[toolIndex]
-    const R = tool.diameterMm / 2
-    const ri = Math.ceil(R / this.cellX), rj = Math.ceil(R / this.cellY)
-    const di: number[] = [], dj: number[] = [], h: number[] = []
-    for (let b = -rj; b <= rj; b++) for (let a = -ri; a <= ri; a++) {
-      const r = Math.hypot(a * this.cellX, b * this.cellY)
-      if (r <= R + 1e-9) { di.push(a); dj.push(b); h.push(toolProfile(tool, Math.min(r, R))) }
-    }
-    // o freză mai mică decât o celulă tot trebuie să lase urmă
-    if (!di.length) { di.push(0); dj.push(0); h.push(0) }
-    k = { di: Int16Array.from(di), dj: Int16Array.from(dj), h: Float32Array.from(h) }
-    this.kernels.set(toolIndex, k)
-    return k
-  }
-
   heightAt(x: number, y: number): number {
     const i = Math.round(x / this.cellX), j = Math.round(y / this.cellY)
     if (i < 0 || j < 0 || i >= this.nx || j >= this.ny) return -Infinity
@@ -176,6 +161,40 @@ export class StockSimulator {
     if (this.reported.has(onceKey) || this.events.length >= 200) return
     this.reported.add(onceKey)
     this.events.push({ kind, moveIndex, line: this.program.lineOf[moveIndex], message })
+  }
+
+  /**
+   * Pasul ștampilelor de-a lungul traseului. La freza dreaptă contează doar cât de drept e peretele
+   * (0,7 celule ajung). La frezele sferice, V și conice adâncimea depinde de distanța la centru,
+   * iar jumătatea de pas devine rezervă la verificarea coliziunilor: pasul rămâne sub 0,25 mm,
+   * altfel pe piese mari (celule mari) un G0 adânc printr-un V-bit ar trece nevăzut.
+   */
+  private stampStep(tool: CamTool): number {
+    const c = 0.7 * Math.min(this.cellX, this.cellY)
+    return tool.shape === 'endmill' ? c : Math.min(c, 0.25)
+  }
+
+  // profilul frezei după r² (tabel): toolProfile cu tan/cos la fiecare celulă ar tripla timpul
+  private profiles = new Map<CamTool, Float32Array>()
+  private static readonly PROFILE_STEPS = 4096
+  private profileTable(tool: CamTool): Float32Array {
+    let t = this.profiles.get(tool)
+    if (!t) {
+      const R = tool.diameterMm / 2, N = StockSimulator.PROFILE_STEPS
+      t = new Float32Array(N + 2)
+      for (let k = 0; k <= N + 1; k++) t[k] = toolProfile(tool, Math.min(R, Math.sqrt((Math.min(k, N) / N) * R * R)))
+      this.profiles.set(tool, t)
+    }
+    return t
+  }
+  // raza urmei vârfului: ½ diagonală de celulă + ½ din cel mai lung pas de ștampilare
+  private tipRadius() { return 0.5 * Math.hypot(this.cellX, this.cellY) + 0.35 * Math.min(this.cellX, this.cellY) }
+  private profileAt(tool: CamTool, table: Float32Array, r2: number): number {
+    const R2 = (tool.diameterMm / 2) ** 2
+    if (R2 <= 0) return 0
+    const f = Math.max(0, Math.min(1, r2 / R2)) * StockSimulator.PROFILE_STEPS
+    const k = Math.floor(f)
+    return table[k] + (table[k + 1] - table[k]) * (f - k)
   }
 
   /**
@@ -197,18 +216,53 @@ export class StockSimulator {
     const n = Math.max(1, Math.ceil(len / (Math.min(this.cellX, this.cellY) * 0.7)))
 
     if (type === MOVE_RAPID) {
-      // centrul și 8 puncte pe marginea frezei: un G0 prin lemn atinge întâi cu marginea
-      const ring = [[0, 0]]
-      for (let a = 0; a < 8; a++) ring.push([Math.cos((a * Math.PI) / 4) * R * 0.9, Math.sin((a * Math.PI) / 4) * R * 0.9])
-      outer: for (let s = 1; s <= n; s++) {
+      // Toate celulele de sub freză, cu forma ei (sferică, V), nu doar câteva puncte pe margine.
+      // Tăieturile anterioare sunt „ștampilate” din poziția exactă a frezei, cu pasul stampStep:
+      // cea mai apropiată ștampilă poate fi la o jumătate de pas de-a lungul traseului, deci o
+      // celulă la distanța r e sigur tăiată doar până la adâncimea frezei la √(r² + ½pas²).
+      // Fără această rezervă ar ieși coliziuni false care apar/dispar după densitatea rețelei
+      // (verificat exact pe G-code real: 0 mm lemn atins).
+      if (Math.min(z0, z1) >= 0) return
+      const half = this.stampStep(tool) / 2
+      const table = this.profileTable(tool)
+      const R2 = R * R
+      const tol = 0.05
+      const slope = len > 1e-9 ? Math.abs(z1 - z0) / len : 0
+      const reachTip = this.tipRadius()
+      const hit = (top: number, cz: number) => {
+        this.event('collision', moveIndex, `COLIZIUNE la linia ${line}: deplasare rapidă (G0) prin lemn, la Z ${cz.toFixed(2)} sub suprafața de ${top.toFixed(2)} mm. Pe mașina reală freza se rupe sau piesa se smulge.`, `col${line}`)
+      }
+      for (let s = 0; s <= n; s++) {
         const f = s / n
         const cx = x0 + (x1 - x0) * f, cy = y0 + (y1 - y0) * f, cz = z0 + (z1 - z0) * f
-        for (const [dx, dy] of ring) {
-          const top = this.heightAt(cx + dx, cy + dy)
-          if (top > cz + 0.05) {
-            this.event('collision', moveIndex, `COLIZIUNE la linia ${line}: deplasare rapidă (G0) prin lemn, la Z ${cz.toFixed(2)} sub suprafața de ${top.toFixed(2)} mm. Pe mașina reală freza se rupe sau piesa se smulge.`, `col${line}`)
-            break outer
+        if (cz >= 0) continue
+        let checked = false
+        const i0 = Math.max(0, Math.ceil((cx - R) / this.cellX)), i1 = Math.min(this.nx - 1, Math.floor((cx + R) / this.cellX))
+        const j0 = Math.max(0, Math.ceil((cy - R) / this.cellY)), j1 = Math.min(this.ny - 1, Math.floor((cy + R) / this.cellY))
+        for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+          const dx = i * this.cellX - cx, dy = j * this.cellY - cy
+          // aici trebuia să fi trecut deja o ștampilă (altfel celula e la marginea tăieturii)
+          const re2 = dx * dx + dy * dy + half * half
+          if (re2 > R2) continue
+          checked = true
+          const top = this.data[j * this.nx + i]
+          if (top > cz + this.profileAt(tool, table, re2) + tol) { hit(top, cz); return }
+        }
+        // vârful frezei: în nodul cel mai apropiat e lemn mai sus decât vârful și nicio freză
+        // nu a trecut cu vârful pe acolo la adâncimea asta → vârful e în lemn. Prinde frezele
+        // ascuțite sau mai mici decât celula, pe care cercul de mai sus nu le „vede”.
+        const i = Math.round(cx / this.cellX), j = Math.round(cy / this.cellY)
+        if (i >= 0 && j >= 0 && i < this.nx && j < this.ny) {
+          const k = j * this.nx + i
+          const top = this.data[k]
+          if (!checked) {
+            const dx = i * this.cellX - cx, dy = j * this.cellY - cy
+            const re2 = Math.min(R2, dx * dx + dy * dy + half * half)
+            if (top > cz + this.profileAt(tool, table, re2) + tol) { hit(top, cz); return }
           }
+          // vârful anterior a trecut la cel mult ½ diagonală + ½ pas de aici: pe o pantă, Z-ul lui
+          // diferă cu panta × distanța asta
+          if (top > cz + tol && this.tipTrack[k] > cz + tol + slope * reachTip) { hit(top, cz); return }
         }
       }
       return
@@ -237,32 +291,64 @@ export class StockSimulator {
   /** Scoate materialul de-a lungul segmentului */
   private stampSegment(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, moveIndex: number) {
     const p = this.program
-    const toolIndex = p.toolIdx[moveIndex]
-    const kern = this.kernel(toolIndex)
+    const tool = p.tools[p.toolIdx[moveIndex]]
+    const R = tool.diameterMm / 2, R2 = R * R
+    const flat = tool.shape === 'endmill'
+    const table = this.profileTable(tool)
     const len = Math.hypot(x1 - x0, y1 - y0)
-    const n = Math.max(1, Math.ceil(len / (Math.min(this.cellX, this.cellY) * 0.7)))
-    const { nx, ny, data } = this
+    const n = Math.max(1, Math.ceil(len / this.stampStep(tool)))
+    const { nx, ny, data, cellX, cellY } = this
 
     for (let s = 1; s <= n; s++) {
       const f = s / n
       const cx = x0 + (x1 - x0) * f, cy = y0 + (y1 - y0) * f, cz = z0 + (z1 - z0) * f
       if (cz >= 0.001) continue
-      const ci = Math.round(cx / this.cellX), cj = Math.round(cy / this.cellY)
-
-      for (let q = 0; q < kern.di.length; q++) {
-        const ii = ci + kern.di[q], jj = cj + kern.dj[q]
-        if (ii < 0 || jj < 0 || ii >= nx || jj >= ny) continue
-        const idx = jj * nx + ii
-        const v = cz + kern.h[q]
-        if (v < data[idx]) {
-          data[idx] = v
-          if (ii < this.dirty.i0) this.dirty.i0 = ii
-          if (ii > this.dirty.i1) this.dirty.i1 = ii
-          if (jj < this.dirty.j0) this.dirty.j0 = jj
-          if (jj > this.dirty.j1) this.dirty.j1 = jj
+      // urma vârfului: nodurile ale căror celule le poate atinge acest punct (plus o jumătate
+      // de pas, ca verificarea dintre două ștampile să găsească una dintre ele)
+      {
+        const rt = this.tipRadius(), rt2 = rt * rt
+        const a0 = Math.max(0, Math.ceil((cx - rt) / cellX)), a1 = Math.min(nx - 1, Math.floor((cx + rt) / cellX))
+        const b0 = Math.max(0, Math.ceil((cy - rt) / cellY)), b1 = Math.min(ny - 1, Math.floor((cy + rt) / cellY))
+        for (let b = b0; b <= b1; b++) for (let a = a0; a <= a1; a++) {
+          const dx = a * cellX - cx, dy = b * cellY - cy
+          if (dx * dx + dy * dy <= rt2 && cz < this.tipTrack[b * nx + a]) this.tipTrack[b * nx + a] = cz
+        }
+      }
+      // distanța se măsoară de la poziția EXACTĂ a frezei (nu rotunjită la celulă): pereții
+      // tăieturilor stau la locul lor real, iar verificarea coliziunilor poate fi strânsă
+      const i0 = Math.max(0, Math.ceil((cx - R) / cellX)), i1 = Math.min(nx - 1, Math.floor((cx + R) / cellX))
+      const j0 = Math.max(0, Math.ceil((cy - R) / cellY)), j1 = Math.min(ny - 1, Math.floor((cy + R) / cellY))
+      // o freză mai mică decât o celulă tot trebuie să lase urmă
+      if (i0 > i1 || j0 > j1) {
+        const ii = Math.round(cx / cellX), jj = Math.round(cy / cellY)
+        if (ii >= 0 && jj >= 0 && ii < nx && jj < ny && cz < data[jj * nx + ii]) {
+          data[jj * nx + ii] = cz
+          this.markDirty(ii, jj)
+        }
+        continue
+      }
+      for (let jj = j0; jj <= j1; jj++) {
+        const dy = jj * cellY - cy
+        for (let ii = i0; ii <= i1; ii++) {
+          const dx = ii * cellX - cx
+          const r2 = dx * dx + dy * dy
+          if (r2 > R2) continue
+          const idx = jj * nx + ii
+          const v = flat ? cz : cz + this.profileAt(tool, table, r2)
+          if (v < data[idx]) {
+            data[idx] = v
+            this.markDirty(ii, jj)
+          }
         }
       }
     }
+  }
+
+  private markDirty(ii: number, jj: number) {
+    if (ii < this.dirty.i0) this.dirty.i0 = ii
+    if (ii > this.dirty.i1) this.dirty.i1 = ii
+    if (jj < this.dirty.j0) this.dirty.j0 = jj
+    if (jj > this.dirty.j1) this.dirty.j1 = jj
   }
 
   /** Avansează simularea până la mișcarea `target`, fracțiunea `frac` (0..1) din ea */

@@ -108,6 +108,61 @@ for (const post of POST_PROCESSORS) {
     `împărțire în ${tiles.length} bucăți: ${problems} probleme${firstProblem ? ' — ' + firstProblem : ''}; diferență maximă față de piesa întreagă ${worst.toFixed(3)} mm`)
 }
 
+// plăci separate, lipite după: fiecare placă trebuie să fie completă PÂNĂ ÎN MUCHIE (la îmbinare),
+// nu doar în interior. (Tăierea „o placă mutată” diferă doar pe pantele abrupte de lângă muchie;
+// pe reliefuri line abaterea ei e tot mică — se afișează doar ca informație.)
+{
+  const fullFiles = planOutputFiles(out.toolpaths, job, 'grbl', 'f', true)
+  const full = new StockSimulator(buildProgram(fullFiles.map(f => ({ name: f.name, text: f.render() })), job, (t, fi) => toolForFile(fullFiles[fi], t)!), 700_000)
+  full.runAll()
+  const seamError = (mode: 'separateBoards' | 'moveBoard') => {
+    const tiles = splitIntoTiles(out.toolpaths, { ...job, tileMode: mode }, 60, 50)
+    let worst = 0, problems = 0, firstProblem = ''
+    for (const tile of tiles) {
+      const files = planOutputFiles(tile.toolpaths, tile.job, 'grbl', `p${tile.index}`, true)
+      const prog = buildProgram(files.map(f => ({ name: f.name, text: f.render() })), tile.job, (t, fi) => toolForFile(files[fi], t)!)
+      const sim = new StockSimulator(prog, 300_000)
+      sim.runAll()
+      const bad = sim.events.filter(e => e.kind !== 'toolChange')
+      problems += bad.length
+      if (bad.length && !firstProblem) firstProblem = `placa ${tile.index}: ${bad[0].message}`
+      // toată placa, inclusiv lângă muchii (0,3 mm de la margine)
+      for (let y = tile.y0 + 0.3; y < tile.y0 + tile.heightMm - 0.3; y += 0.7) {
+        for (let x = tile.x0 + 0.3; x < tile.x0 + tile.widthMm - 0.3; x += 0.7) {
+          worst = Math.max(worst, Math.abs(sim.heightAt(x - tile.x0, y - tile.y0) - full.heightAt(x, y)))
+        }
+      }
+    }
+    return { worst, problems, firstProblem, n: tiles.length }
+  }
+  const sep = seamError('separateBoards'), mv = seamError('moveBoard')
+  check(sep.problems === 0 && sep.worst < 0.2,
+    `plăci separate (${sep.n}): ${sep.problems} probleme${sep.firstProblem ? ' — ' + sep.firstProblem : ''}; până în muchie diferă cu max ${sep.worst.toFixed(3)} mm (tăiate ca „o placă mutată”: ${mv.worst.toFixed(3)} mm)`)
+
+  // pantă abruptă chiar pe îmbinare: aici se vede de ce plăcile separate trec peste muchie
+  const steepW = 80, steepH = 40, imgW = 160, imgH = 80
+  const hm = new Float32Array(imgW * imgH)
+  for (let y = 0; y < imgH; y++) for (let x = 0; x < imgW; x++) hm[y * imgW + x] = Math.max(0, Math.min(1, 0.5 + (x - imgW / 2) / 12))
+  const sj = { ...job, widthMm: steepW, heightMm: steepH, roughingEnabled: false, finishingTool: findTool('bn3175') }
+  const steep = runCam({ heightmap: hm, imgW, imgH, job: sj })
+  const steepFull = new StockSimulator(buildProgram(planOutputFiles(steep.toolpaths, sj, 'grbl', 's', true).map(f => ({ name: f.name, text: f.render() })), sj, () => sj.finishingTool), 300_000)
+  steepFull.runAll()
+  const seam = (mode: 'separateBoards' | 'moveBoard') => {
+    let worst = 0
+    for (const tile of splitIntoTiles(steep.toolpaths, { ...sj, tileMode: mode }, 40, 40)) {
+      const files = planOutputFiles(tile.toolpaths, tile.job, 'grbl', 't', true)
+      const sim = new StockSimulator(buildProgram(files.map(f => ({ name: f.name, text: f.render() })), tile.job, () => sj.finishingTool), 300_000)
+      sim.runAll()
+      for (let y = 2; y < steepH - 2; y += 0.5) for (let x = tile.x0 + 0.2; x < tile.x0 + tile.widthMm - 0.2; x += 0.2) {
+        worst = Math.max(worst, Math.abs(sim.heightAt(x - tile.x0, y) - steepFull.heightAt(x, y)))
+      }
+    }
+    return worst
+  }
+  const sepSteep = seam('separateBoards'), mvSteep = seam('moveBoard')
+  check(sepSteep < 0.2, `pantă abruptă pe îmbinare: plăci separate diferă cu ${sepSteep.toFixed(3)} mm; tăiate ca „o placă mutată” ar lăsa ${mvSteep.toFixed(2)} mm`)
+}
+
 // decalajul conturului: centrul frezei nu se apropie de contur la mai puțin de R (colțuri drepte)
 {
   const R = 3
@@ -146,6 +201,27 @@ for (const post of POST_PROCESSORS) {
   const slowKinds = new Set(slow.events.map(e => e.kind))
   check(slowKinds.has('collision') && slowKinds.has('deepPlunge') && slowKinds.has('spoilboard'),
     `redare lentă cadru cu cadru prinde: ${[...slowKinds].join(', ')}`)
+}
+
+// G0 înapoi prin șanțul abia tăiat: pe același loc NU e coliziune (oricare freză, oricare rețea);
+// deplasat lateral cu 1 mm în peretele de lemn ESTE coliziune (la densitatea verificării complete)
+{
+  const j = { ...job, widthMm: 300, heightMm: 400, xyOrigin: 'bottomLeft' as const, zZero: 'top' as const }
+  const groove = (y0: number, d: number) => ['G21 G90', 'G0 Z5', `G0 X20 Y${y0}`, 'G1 Z-3 F300', `G1 X280 Y${y0} F1000`, `G0 X30 Y${(y0 + d).toFixed(3)}`, 'G0 Z5', 'M30'].join('\n')
+  const collides = (tool: string, cells: number, y0: number, d: number) => {
+    const s = new StockSimulator(buildProgram([{ name: 'g.nc', text: groove(y0, d) }], j, () => findTool(tool)), cells)
+    s.runAll()
+    return s.events.some(e => e.kind === 'collision')
+  }
+  let falseAlarms = 0, missed = 0, total = 0
+  for (const tool of ['em6', 'em3175', 'bn2', 'bn1', 'vb60']) {
+    for (const cells of [120_000, 220_000, 400_000]) for (const y0 of [100, 100.37, 100.71]) {
+      total++
+      if (collides(tool, cells, y0, 0)) falseAlarms++
+    }
+    for (const y0 of [100, 100.37, 100.71]) if (!collides(tool, 400_000, y0, 1)) missed++
+  }
+  check(falseAlarms === 0 && missed === 0, `G0 prin șanț: ${falseAlarms}/${total} alarme false, ${missed}/15 coliziuni de 1 mm ratate`)
 }
 
 // arce și inch
