@@ -1,9 +1,8 @@
 # STARE — CNC WoodCraft Studio (actualizat 2026-10-29, târziu)
 
 ## Unde suntem
-Publicat pe https://almeueste777-ops.github.io/cnc-woodcraft-pwa/ versiunea c60cbae (ramura gh-pages).
-Lucrul de azi (atelier hartă, AI, V-Carve, rest, calculator) e în copia locală, NEsalvat în git și
-NEpublicat — așteaptă acordul Otiliei.
+Publicat pe https://almeueste777-ops.github.io/cnc-woodcraft-pwa/ versiunea 861e843 (ramura gh-pages), verificat live 2026-10-29:
+atelier hartă, AI, V-Carve, rest, calculator — toate salvate în git și publicate.
 
 - Motor CAM relief (`src/cam/engine.ts`): drop-cutter cu rafinare adaptivă; degroșare pe niveluri;
   finisare X/Y/încrucișat; **finisare de rest** (freză fină doar unde n-a ajuns cea mare, pe niveluri Z,
