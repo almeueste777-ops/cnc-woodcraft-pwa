@@ -93,10 +93,11 @@ pauză, schimbare de sculă (M6) sau **câte un fișier pe freză** (GRBL, Marli
 - Împărțire pe bucăți când piesa e mai mare decât cursa mașinii, câte un fișier pe bucată.
 
 ### 13. 🖌️ Atelier hartă de adâncime și hartă AI
-- **Hartă făcută de AI din poză** (Depth Anything V2, rulează în browser; poza nu pleacă din calculator).
+- **Hartă făcută de AI din poză** (Depth Anything V2, rulează în browser; poza nu pleacă din calculator), cu detaliile fine din poză puse peste volum (glisorul „Detalii din poză”).
 - **Combinare de hărți**: straturi din PNG 16 biți, STL, imagine, cupolă sau harta AI — adună, scade,
   cel mai înalt, cel mai jos, înlocuiește; poziție și mărime.
-- **Retușare cu pensula**: ridică, coboară, netezește, nivelează, șterge retușul, cu anulare.
+- **Retușare cu pensula**: ridică, coboară, netezește, accentuează, nivelează (la nivelul de start sau la unul ales cu pipeta), șterge retușul. Mărime 0,2–80 mm, putere, duritate, „mână liniștită”, presiunea creionului, limite „nu coborî sub / nu urca peste”, linie dreaptă cu Shift+clic, anulare și refacere pe 50 de pași.
+- **Zoom puternic**: „Ecran mare”, rotița (în jurul mausului) până la 48 de pixeli de ecran pe un pixel al hărții, mutare cu Spațiu / clic dreapta / butonul din mijloc / „Mână”, două degete pe ecran tactil, înălțimea în mm sub maus.
 
 ### 14. ✍️ Lucrări vectoriale (ca în V-Carve Pro)
 - Forma din imagine și/sau din **text scris cu un font**.
@@ -111,7 +112,9 @@ npx tsx tests/cam-check.ts      # fără gouging (sferică, conică, V), degroș
 npx tsx tests/sim-check.ts      # simulator, decupare, bucăți și plăci separate, coliziuni G0, fișier greșit prins, arce G2/G3
 npx tsx tests/mesh-check.ts     # plasa 3D / STL: corp închis, normale, volum, timp
 npx tsx tests/depth-check.ts    # hartă de adâncime PNG 16 biți: scriere/citire fără pierdere
-npx tsx tests/depthedit-check.ts # straturi și pensulă
+npx tsx tests/depthedit-check.ts # straturi și pensulă (duritate, limite, accentuare)
+node tests/ui-pensula.mjs <dosar> <imagine> # cu `npm run dev` pornit: zoom + pensulă cap-coadă, în Edge ascuns
+npx tsx tests/aidetail-check.ts  # detaliile din poză peste harta AI
 npx tsx tests/vcarve-check.ts   # V-carve, buzunar, profil, găuri: exact față de forma analitică
 npx tsx tests/vectorjob-check.ts # lucrările împreună: fund plat cu freză dreaptă, ordine, găuri
 npx tsx tests/rest-check.ts     # finisare de rest: nu taie în relief, pas Z, zone

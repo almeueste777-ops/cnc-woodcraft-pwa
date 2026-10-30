@@ -96,6 +96,57 @@ const square = (v: number): DepthLayer => ({
 }
 
 {
+  // duritate: la 0.8 R pensula moale abia atinge, cea tare lucrează cu putere întreagă
+  const u = base.slice()
+  const rs = new Float32Array(W * H), cs = composeDepth(u, null, W, H)
+  brushDab('raise', u, rs, cs, W, H, 100.5, 50.5, 10, 1, 0, { hardness: 0 })
+  const rh = new Float32Array(W * H), ch = composeDepth(u, null, W, H)
+  brushDab('raise', u, rh, ch, W, H, 100.5, 50.5, 10, 1, 0, { hardness: 1 })
+  ok(near(ch[50 * W + 108], 0.52, 1e-6) && cs[50 * W + 108] < 0.505, `duritate: la 0.8 R tare ${ch[50 * W + 108].toFixed(4)}, moale ${cs[50 * W + 108].toFixed(4)}`)
+  ok(ch[50 * W + 111] === 0.5, 'nici pensula tare nu iese din rază')
+
+  // limite de înălțime
+  const rl = new Float32Array(W * H), cl = composeDepth(u, null, W, H)
+  for (let k = 0; k < 50; k++) brushDab('raise', u, rl, cl, W, H, 100, 50, 10, 1, 0, { maxLevel: 0.55 })
+  let mx = 0; for (const v of cl) mx = Math.max(mx, v)
+  ok(mx <= 0.55 + 1e-6 && near(cl[50 * W + 100], 0.55, 1e-6), `ridicarea se oprește la limita de sus (${mx.toFixed(4)})`)
+  const high = new Float32Array(W * H).fill(0.8), rr = new Float32Array(W * H), cc = high.slice()
+  brushDab('raise', high, rr, cc, W, H, 100, 50, 10, 1, 0, { maxLevel: 0.55 })
+  ok(cc[50 * W + 100] === high[50 * W + 100], 'ce era deja peste limită nu e tăiat de pensulă')
+  const rd = new Float32Array(W * H), cd = composeDepth(u, null, W, H)
+  for (let k = 0; k < 50; k++) brushDab('lower', u, rd, cd, W, H, 100, 50, 10, 1, 0, { minLevel: 0.45 })
+  let mn = 1; for (const v of cd) mn = Math.min(mn, v)
+  ok(mn >= 0.45 - 1e-6 && near(cd[50 * W + 100], 0.45, 1e-6), `coborârea se oprește la limita de jos (${mn.toFixed(4)})`)
+  ok(near(rd[50 * W + 100], -0.05, 1e-6), 'retușul ține pasul cu harta (valoare − bază)')
+
+  // accentuare: treapta 0.2|0.8 devine mai abruptă
+  const st2 = new Float32Array(W * H)
+  for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) st2[j * W + i] = i < 100 ? 0.2 : 0.8
+  const ra = new Float32Array(W * H), ca = st2.slice()
+  brushDab('sharpen', st2, ra, ca, W, H, 100, 50, 12, 1, 0)
+  ok(ca[50 * W + 101] > 0.82 && ca[50 * W + 98] < 0.18, `accentuare: treapta 0.2|0.8 devine ${ca[50 * W + 98].toFixed(2)}|${ca[50 * W + 101].toFixed(2)}`)
+  ok(ca[50 * W + 50] === st2[50 * W + 50] && ca[50 * W + 150] === st2[50 * W + 150], 'accentuarea nu atinge ce e departe sau plat')
+
+  // pensula trasă peste marginea hărții: nicio eroare, nimic schimbat
+  const ro = new Float32Array(W * H), co = st2.slice()
+  let threw = false
+  try {
+    for (const t of ['smooth', 'sharpen', 'raise', 'flatten', 'erase'] as const) {
+      for (const [x, y] of [[-50, 50], [W + 50, 50], [100, -40], [100, H + 40]]) brushDab(t, st2, ro, co, W, H, x, y, 3, 1, 0.5)
+    }
+  } catch { threw = true }
+  ok(!threw && co.every((v, i) => v === st2[i]), 'pensula în afara hărții nu dă eroare și nu schimbă nimic')
+
+  // straturi care urcă baza peste 1: o netezire pe zona plată nu lasă retuș ascuns
+  const over = new Float32Array(W * H).fill(1.2), rov = new Float32Array(W * H), cov = composeDepth(over, null, W, H)
+  brushDab('smooth', over, rov, cov, W, H, 100, 50, 10, 1, 0)
+  ok(rov.every(v => v === 0), 'baza peste 1 (straturi): netezirea fără efect nu lasă retuș ascuns')
+  brushDab('lower', over, rov, cov, W, H, 100, 50, 10, 1, 0)
+  ok(cov[50 * W + 100] < 0.99 && cov[50 * W + 100] > 0.97, `baza peste 1: „Coboară” se vede de la prima apăsare (${cov[50 * W + 100].toFixed(3)})`)
+  ok(Math.abs(over[50 * W + 100] + rov[50 * W + 100] - cov[50 * W + 100]) < 1e-6, 'retușul arată exact ce se vede (fără rest ascuns)')
+}
+
+{
   const big = new Float32Array(4 * 4).map((_, i) => i / 15)
   const r = resizeDepth(big, 4, 4, 8, 8)
   ok(r.every(v => v >= 0 && v <= 1) && near(r[0], 0, 1e-6) && near(r[63], 1, 1e-6), 'redimensionare bilineară păstrează capetele')

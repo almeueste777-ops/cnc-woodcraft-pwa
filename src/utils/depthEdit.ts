@@ -28,7 +28,15 @@ export interface DepthLayer {
 
 export interface Retouch { data: Float32Array; w: number; h: number }
 
-export type BrushTool = 'raise' | 'lower' | 'smooth' | 'flatten' | 'erase'
+export type BrushTool = 'raise' | 'lower' | 'smooth' | 'sharpen' | 'flatten' | 'erase'
+
+export interface BrushOpts {
+  /** 0 = margine moale (cum era), 1 = margine tare: toată pata lucrează cu putere întreagă */
+  hardness?: number
+  /** pensula nu duce relieful sub / peste aceste niveluri (0..1); ce era deja dincolo de ele nu e atins */
+  minLevel?: number
+  maxLevel?: number
+}
 
 export const LAYER_MODES: Array<{ id: LayerMode; label: string; hint: string }> = [
   { id: 'add', label: 'Adună', hint: 'stratul se pune deasupra reliefului (ex. un ornament pe ramă)' },
@@ -116,46 +124,59 @@ export function composeDepth(under: Float32Array, retouch: Retouch | null, w: nu
 export function brushDab(
   tool: BrushTool,
   under: Float32Array, retouch: Float32Array, composed: Float32Array, w: number, h: number,
-  px: number, py: number, R: number, strength: number, level: number
+  px: number, py: number, R: number, strength: number, level: number, opts: BrushOpts = {}
 ): { i0: number; j0: number; i1: number; j1: number } {
+  const hard = Math.min(1, Math.max(0, opts.hardness ?? 0))
+  const minL = opts.minLevel ?? 0, maxL = opts.maxLevel ?? 1
   const i0 = Math.max(0, Math.floor(px - R)), i1 = Math.min(w - 1, Math.ceil(px + R))
   const j0 = Math.max(0, Math.floor(py - R)), j1 = Math.min(h - 1, Math.ceil(py + R))
-  // la netezire: media locală se ia din harta de dinaintea apăsării (altfel ar depinde de ordinea pixelilor)
-  let src: Float32Array | null = null
-  const br = Math.max(1, Math.round(R / 4))
-  let sw = 0
-  if (tool === 'smooth') {
+  // pensula complet în afara hărții (tras peste margine): nimic de făcut
+  if (i0 > i1 || j0 > j1) return { i0, j0, i1: i0 - 1, j1: j0 - 1 }
+  // valoarea nouă, cu limitele de înălțime. Retușul se pune exact cât să se vadă valoarea nouă
+  // (și unde straturile împing baza peste 1); o apăsare fără efect nu atinge retușul, deci nu lasă nimic ascuns
+  const put = (k: number, v: number) => {
+    const prev = composed[k]
+    const lo = Math.min(prev, minL), hi = Math.max(prev, maxL)
+    if (v < lo) v = lo
+    else if (v > hi) v = hi
+    v = clamp01(v)
+    if (v === prev) return
+    retouch[k] = v - under[k]
+    composed[k] = v
+  }
+  if (tool === 'smooth' || tool === 'sharpen') {
+    // media locală se ia din harta de dinaintea apăsării (altfel ar depinde de ordinea pixelilor)
+    const br = Math.max(1, Math.round(R / 4))
     const a0 = Math.max(0, i0 - br), a1 = Math.min(w - 1, i1 + br), b0 = Math.max(0, j0 - br), b1 = Math.min(h - 1, j1 + br)
-    sw = a1 - a0 + 1
-    src = new Float32Array(sw * (b1 - b0 + 1))
+    const sw = a1 - a0 + 1, sh = b1 - b0 + 1
+    const src = new Float32Array(sw * sh)
     for (let j = b0; j <= b1; j++) for (let i = a0; i <= a1; i++) src[(j - b0) * sw + (i - a0)] = composed[j * w + i]
     // medie pe fereastră, separabilă (rânduri, apoi coloane), pe zona copiată
-    const sh = b1 - b0 + 1
     const tmp = new Float32Array(src.length)
     for (let j = 0; j < sh; j++) {
       for (let i = 0; i < sw; i++) {
-        let s = 0, n = 0
-        for (let d = -br; d <= br; d++) { const ii = i + d; if (ii >= 0 && ii < sw) { s += src[j * sw + ii]; n++ } }
-        tmp[j * sw + i] = s / n
+        let sum = 0, n = 0
+        for (let d = -br; d <= br; d++) { const ii = i + d; if (ii >= 0 && ii < sw) { sum += src[j * sw + ii]; n++ } }
+        tmp[j * sw + i] = sum / n
       }
     }
+    const blur = new Float32Array(src.length)
     for (let i = 0; i < sw; i++) {
       for (let j = 0; j < sh; j++) {
-        let s = 0, n = 0
-        for (let d = -br; d <= br; d++) { const jj = j + d; if (jj >= 0 && jj < sh) { s += tmp[jj * sw + i]; n++ } }
-        src[j * sw + i] = s / n
+        let sum = 0, n = 0
+        for (let d = -br; d <= br; d++) { const jj = j + d; if (jj >= 0 && jj < sh) { sum += tmp[jj * sw + i]; n++ } }
+        blur[j * sw + i] = sum / n
       }
     }
-    // indicii în src sunt relativi la (a0, b0)
-    const ox = a0, oy = b0
     for (let j = j0; j <= j1; j++) {
       for (let i = i0; i <= i1; i++) {
-        const f = falloff(Math.hypot(i + 0.5 - px, j + 0.5 - py) / R)
+        const f = brushFalloff(Math.hypot(i + 0.5 - px, j + 0.5 - py) / R, hard)
         if (f <= 0) continue
         const k = j * w + i
-        const target = src[(j - oy) * sw + (i - ox)]
-        retouch[k] += (target - composed[k]) * strength * f
-        composed[k] = clamp01(under[k] + retouch[k])
+        const c = composed[k], m = blur[(j - b0) * sw + (i - a0)]
+        // netezire: spre media locală; accentuare: departe de ea
+        // accentuarea: pas mic, pentru că apăsările unei trăsături se suprapun de ~8 ori
+        put(k, tool === 'smooth' ? c + (m - c) * strength * f : c + (c - m) * strength * f * 0.2)
       }
     }
     return { i0, j0, i1, j1 }
@@ -163,20 +184,17 @@ export function brushDab(
   const step = 0.02 * strength // ridicare/coborâre pe apăsare: 2% din adâncime la putere maximă
   for (let j = j0; j <= j1; j++) {
     for (let i = i0; i <= i1; i++) {
-      const f = falloff(Math.hypot(i + 0.5 - px, j + 0.5 - py) / R)
+      const f = brushFalloff(Math.hypot(i + 0.5 - px, j + 0.5 - py) / R, hard)
       if (f <= 0) continue
       const k = j * w + i
+      const c = composed[k]
       switch (tool) {
-        case 'raise': retouch[k] += step * f; break
-        case 'lower': retouch[k] -= step * f; break
-        case 'flatten': retouch[k] += (level - composed[k]) * strength * f; break
-        case 'erase': retouch[k] *= 1 - strength * f; break
+        case 'raise': put(k, c + step * f); break
+        case 'lower': put(k, c - step * f); break
+        case 'flatten': put(k, c + (level - c) * strength * f); break
+        // ștergerea readuce harta de dinainte de pensulă: nu ține cont de limite
+        case 'erase': retouch[k] *= 1 - strength * f; composed[k] = clamp01(under[k] + retouch[k]); break
       }
-      // retușul nu crește la nesfârșit peste limite: ce iese din 0..1 nu se mai vede oricum
-      const v = under[k] + retouch[k]
-      if (v > 1) retouch[k] = 1 - under[k]
-      else if (v < 0) retouch[k] = -under[k]
-      composed[k] = clamp01(under[k] + retouch[k])
     }
   }
   return { i0, j0, i1, j1 }
@@ -185,10 +203,13 @@ export function brushDab(
 function clamp01(v: number) { return v < 0 ? 0 : v > 1 ? 1 : v }
 
 /** Margine moale: 1 în centru, 0 la marginea pensulei, fără treaptă */
-function falloff(t: number): number {
+/** cât lucrează pensula la distanța t (0 = centru, 1 = margine); duritatea lărgește miezul plin */
+export function brushFalloff(t: number, hardness = 0): number {
   if (t >= 1) return 0
-  const u = 1 - t * t
-  return u * u
+  if (t <= hardness) return 1
+  const u = (t - hardness) / (1 - hardness)
+  const v = 1 - u * u
+  return v * v
 }
 
 /** Redimensionare bilineară (hărți mari aduse la mărimea de lucru) */
