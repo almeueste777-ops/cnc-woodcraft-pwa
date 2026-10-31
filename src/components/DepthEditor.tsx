@@ -1,9 +1,11 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { LAYER_MODES, resizeDepth, type DepthLayer, type LayerMode, type Retouch } from '../utils/depthEdit'
 import { decodeDepthPng16 } from '../utils/depthMapIO'
 import { stlToDepth, loadImageFile } from '../utils/modelImport'
 import { estimateDepthAI, type AiDepthResult } from '../utils/aiDepth'
 import { addPhotoDetail, canvasGrey } from '../utils/aiDetail'
+import { cancelIconMaps, estimateIconMaps, type IconMaps } from '../utils/iconReliefAi'
+import { finishIconRelief, prepareIconRelief, ICON_RELIEF_DEFAULTS, type IconReliefOpts } from '../utils/iconRelief'
 import { Brush, Layers, Trash, Sparkles, Eye, EyeOff, ArrowUp, ArrowDown, Plus, Loader2 } from 'lucide-react'
 import { DepthBrush } from './DepthBrush'
 import { Slider, boxCls, titleCls, btn } from './editorUi'
@@ -80,7 +82,32 @@ export const DepthEditor: React.FC<Props> = ({ under, retouch, onRetouchChange, 
   // o hartă AI ține de poza din care a ieșit: la poză nouă o uităm (altfel s-ar pune peste altă imagine)
   // fiecare rulare are un număr; doar ultima are voie să scrie starea (o rulare veche care se termină târziu e ignorată)
   const aiRun = useRef(0)
-  useEffect(() => { aiRun.current++; setAi({ busy: false, text: '', fraction: null, result: null }) }, [sourceCanvas])
+  // „icon” = 3 modele (sfântul separat de fundal + volum + relief sculptat); „photo” = un singur model, rapid
+  const [aiMode, setAiMode] = useState<'icon' | 'photo'>('icon')
+  const [icon, setIcon] = useState<IconMaps | null>(null)
+  const [iconOpts, setIconOpts] = useState<IconReliefOpts>(ICON_RELIEF_DEFAULTS)
+  const shownOpts = useDeferredValue(iconOpts) // glisorul rămâne lin; harta se reface imediat după
+  // partea grea (estompări, praguri) o dată pe icoană; glisoarele refac doar partea rapidă
+  const iconPrep = useMemo(() => (icon ? prepareIconRelief(icon.depth, icon.mask, icon.height, icon.width, icon.height_) : null), [icon])
+  const iconRelief = useMemo(() => (iconPrep ? finishIconRelief(iconPrep, shownOpts) : null), [iconPrep, shownOpts])
+  // la clic: exact valorile de pe glisoare acum (previzualizarea poate fi cu o clipă în urmă)
+  const iconNow = () => (iconPrep ? finishIconRelief(iconPrep, iconOpts) : null)
+  const iconPreview = useRef<HTMLCanvasElement>(null)
+  useEffect(() => {
+    const cv = iconPreview.current
+    if (!cv || !icon || !iconRelief) return
+    cv.width = icon.width
+    cv.height = icon.height_
+    const img = new ImageData(icon.width, icon.height_)
+    for (let i = 0; i < iconRelief.length; i++) {
+      const g = Math.round(iconRelief[i] * 255)
+      img.data[i * 4] = g; img.data[i * 4 + 1] = g; img.data[i * 4 + 2] = g; img.data[i * 4 + 3] = 255
+    }
+    cv.getContext('2d')!.putImageData(img, 0, 0)
+  }, [icon, iconRelief])
+  useEffect(() => { aiRun.current++; cancelIconMaps(); setAi({ busy: false, text: '', fraction: null, result: null }); setIcon(null) }, [sourceCanvas])
+  // ieși din atelier (alt mod al aplicației) în timp ce lucrează AI-ul: calculul se oprește, memoria se eliberează
+  useEffect(() => () => { aiRun.current++; cancelIconMaps() }, [])
   const withDetail = (r: AiDepthResult): AiDepthResult => {
     if (!sourceCanvas || detail <= 0) return r
     return { ...r, data: addPhotoDetail(r.data, canvasGrey(sourceCanvas, r.width, r.height), r.width, r.height, detail) }
@@ -111,8 +138,17 @@ export const DepthEditor: React.FC<Props> = ({ under, retouch, onRetouchChange, 
     if (!sourceCanvas || ai.busy) return
     const run = ++aiRun.current
     setAi({ busy: true, text: 'Pornesc...', fraction: null, result: null })
+    setIcon(null)
+    const progress = (text: string, fraction: number | null) => { if (aiRun.current === run) setAi(a => ({ ...a, text, fraction })) }
     try {
-      const res = await estimateDepthAI(sourceCanvas, (text, fraction) => { if (aiRun.current === run) setAi(a => ({ ...a, text, fraction })) })
+      if (aiMode === 'icon') {
+        const maps = await estimateIconMaps(sourceCanvas, progress)
+        if (aiRun.current !== run) return
+        setIcon(maps)
+        setAi({ busy: false, text: '', fraction: null, result: null })
+        return
+      }
+      const res = await estimateDepthAI(sourceCanvas, progress)
       if (aiRun.current !== run) return
       setAi({ busy: false, text: '', fraction: null, result: res })
     } catch (err) {
@@ -131,15 +167,63 @@ export const DepthEditor: React.FC<Props> = ({ under, retouch, onRetouchChange, 
       {/* Hartă AI */}
       <div className={boxCls}>
         <span className={titleCls}><Sparkles className="w-4 h-4" /> Hartă făcută de AI din poză</span>
-        <span className="text-[10px] text-stone-400">
-          AI-ul „ghicește” ce e aproape și ce e departe în poză (chip, mâini, veșminte) și face din asta relief. Merge pe fotografii
-          și pe icoane. Peste volumul dat de AI se pun detaliile fine din poză (fața, faldurile, penele, literele), cât alegi tu.
-          Prima dată descarcă modelul (~27 MB); poza ta nu pleacă din calculator.
-        </span>
+        <div className="flex flex-wrap gap-1">
+          <button onClick={() => setAiMode('icon')} disabled={ai.busy} className={btn(aiMode === 'icon')}>Icoană (3 modele, cel mai bun)</button>
+          <button onClick={() => setAiMode('photo')} disabled={ai.busy} className={btn(aiMode === 'photo')}>Fotografie (1 model, rapid)</button>
+        </div>
+        {aiMode === 'icon' ? (
+          <span className="text-[10px] text-stone-400">
+            Trei modele AI lucrează împreună: ISNet desparte sfântul de fundal (fundalul rămâne plat, jos), Depth Anything dă
+            volumul figurii, DeepBump citește umbrele picturii și sculptează fața, mâinile, penele, faldurile. Prima dată descarcă
+            ~170 MB (modelele + motorul AI, o singură dată), apoi merge și fără internet; durează ~1 minut pe icoană.
+            Poza ta nu pleacă din calculator. Cel mai bine iese pe o poză decupată doar pe icoană (fără perete, fără ramă de lemn).
+            <span className="block text-stone-500 mt-0.5">
+              Modele: ISNet (Qin et al., ECCV 2022; AGPL-3.0 pe onnx-community), Depth Anything V2 (Apache-2.0), DeepBump (GPL-3.0, Hugo Tini).
+              Aplicația e software liber, GPL-3.0 sau mai nouă; codul sursă:{' '}
+              <a href="https://github.com/almeueste777-ops/cnc-woodcraft-pwa" target="_blank" rel="noreferrer" className="underline">github.com/almeueste777-ops/cnc-woodcraft-pwa</a>.
+            </span>
+          </span>
+        ) : (
+          <span className="text-[10px] text-stone-400">
+            Un singur model (Depth Anything) „ghicește” ce e aproape și ce e departe în poză; peste el se pun detaliile fine din
+            luminozitatea pozei, cât alegi tu. Prima dată descarcă ~27 MB; poza ta nu pleacă din calculator.
+          </span>
+        )}
         <button onClick={runAi} disabled={!sourceCanvas || ai.busy} className="self-start flex items-center gap-1.5 text-xs bg-amber-600 hover:bg-amber-500 text-white font-bold px-3 py-1.5 rounded-lg disabled:opacity-50">
           {ai.busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
-          Fă harta AI din poza încărcată
+          {aiMode === 'icon' ? 'Fă harta de icoană din poza încărcată' : 'Fă harta AI din poza încărcată'}
         </button>
+        {aiMode === 'icon' && sourceCanvas && Math.max(sourceCanvas.width, sourceCanvas.height) < 400 && (
+          <span className="text-[11px] text-amber-300">
+            Poza e mică ({sourceCanvas.width}×{sourceCanvas.height} px): AI-ul poate greși conturul sfântului. O poză de cel puțin 600 px pe latura mare iese mult mai bine.
+          </span>
+        )}
+        {icon && iconRelief && (
+          <div className="flex flex-col gap-1.5">
+            <span className="text-[11px] text-emerald-300">Harta de icoană e gata ({icon.width}×{icon.height_}). Potrivește-o, apoi alege ce faci cu ea:</span>
+            <canvas ref={iconPreview} className="self-center w-full max-w-[260px] rounded-md border border-[#3a352c] bg-black" aria-label="Previzualizarea hărții de icoană" />
+            <Slider label="Detalii sculptate (DeepBump)" value={iconOpts.detail} min={0} max={2} step={0.1}
+              onChange={v => setIconOpts(o => ({ ...o, detail: v }))}
+              shown={iconOpts.detail === 0 ? 'fără' : iconOpts.detail <= 0.6 ? 'puține' : iconOpts.detail <= 1.2 ? 'obișnuit' : 'adânci'} />
+            <Slider label="Înălțimea fundalului" value={iconOpts.background} min={0} max={0.5} step={0.01}
+              onChange={v => setIconOpts(o => ({ ...o, background: v }))} shown={`${(iconOpts.background * maxDepthMm).toFixed(1)} mm`} />
+            <Slider label="Cât iese sfântul din fundal" value={iconOpts.figureBase} min={0} max={0.8} step={0.01}
+              onChange={v => setIconOpts(o => ({ ...o, figureBase: v }))} shown={`${Math.round(iconOpts.figureBase * 100)}%`} />
+            <div className="flex flex-wrap gap-1.5">
+              <button className={btn(false)} onClick={() => { onUseAsRelief({ data: iconNow() ?? iconRelief, width: icon.width, height: icon.height_ }, 'harta_icoana'); setIcon(null) }}>
+                Folosește-o ca relief
+              </button>
+              <button className={btn(false)} onClick={() => {
+                onLayersChange([...layers, newLayer('Hartă de icoană', { data: iconNow() ?? iconRelief, w: icon.width, h: icon.height_ }, 'replace', 1)])
+                setIcon(null)
+                notify('Harta de icoană a fost adăugată ca strat (înlocuiește relieful sub ea). O poți muta și micșora din „Straturi”.')
+              }}>
+                Adaug-o ca strat
+              </button>
+              <button className={btn(false)} onClick={() => setIconOpts(ICON_RELIEF_DEFAULTS)}>Valorile obișnuite</button>
+            </div>
+          </div>
+        )}
         {ai.text && (
           <div className="flex flex-col gap-1">
             <span className={`text-[11px] ${ai.busy ? 'text-amber-300' : 'text-red-300'}`}>{ai.text}</span>

@@ -1,10 +1,12 @@
-import { defineConfig } from 'vite'
+import { defineConfig, defaultClientConditions } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
 
 export default defineConfig({
   base: './',
+  // motorul ONNX își ia fișierele .wasm de pe CDN (ca transformers.js): nu le mai copiem în site (~41 MB)
+  resolve: { conditions: ['onnxruntime-web-use-extern-wasm', ...defaultClientConditions] },
   plugins: [
     tailwindcss(),
     react(),

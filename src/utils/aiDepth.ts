@@ -50,7 +50,7 @@ export function estimateDepthAI(source: HTMLCanvasElement, onProgress: AiProgres
         files.set(m.file, { loaded: m.loaded, total: m.total })
         let loaded = 0, total = 0
         for (const f of files.values()) { loaded += f.loaded; total += f.total }
-        onProgress(`Descarc modelul AI (doar prima dată): ${(loaded / 1e6).toFixed(1)} / ${(total / 1e6).toFixed(1)} MB`, total ? loaded / total : null)
+        onProgress(`Încarc modelul AI (prima dată din internet, apoi din memoria browserului): ${(loaded / 1e6).toFixed(1)} / ${(total / 1e6).toFixed(1)} MB`, total ? loaded / total : null)
         return
       }
       if (m.id !== id) return
@@ -60,6 +60,9 @@ export function estimateDepthAI(source: HTMLCanvasElement, onProgress: AiProgres
         resolve({ data: normalizeDepth(m.data), width: m.width, height: m.height })
       } else if (m.type === 'error') {
         done()
+        // transformers.js pune rularile la coada: dupa o eroare firul ramane stricat, deci il inchidem
+        w0.terminate()
+        if (worker === w0) worker = null
         reject(new Error(friendlyError(m.message)))
       }
     }

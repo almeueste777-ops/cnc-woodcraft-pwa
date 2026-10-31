@@ -93,6 +93,7 @@ pauză, schimbare de sculă (M6) sau **câte un fișier pe freză** (GRBL, Marli
 - Împărțire pe bucăți când piesa e mai mare decât cursa mașinii, câte un fișier pe bucată.
 
 ### 13. 🖌️ Atelier hartă de adâncime și hartă AI
+- **Hartă de icoană din 3 modele AI** (implicit): ISNet desparte sfântul de fundal (fundal plat), Depth Anything dă volumul, DeepBump sculptează fața, mâinile, penele, faldurile din umbrele picturii; glisoare pentru detalii, fundal și cât iese sfântul, cu previzualizare. ~170 MB descărcați o dată (modelele + motorul AI), apoi merge fără internet; ~1 minut pe icoană, totul pe procesor.
 - **Hartă făcută de AI din poză** (Depth Anything V2, rulează în browser; poza nu pleacă din calculator), cu detaliile fine din poză puse peste volum (glisorul „Detalii din poză”).
 - **Combinare de hărți**: straturi din PNG 16 biți, STL, imagine, cupolă sau harta AI — adună, scade,
   cel mai înalt, cel mai jos, înlocuiește; poziție și mărime.
@@ -114,7 +115,9 @@ npx tsx tests/mesh-check.ts     # plasa 3D / STL: corp închis, normale, volum, 
 npx tsx tests/depth-check.ts    # hartă de adâncime PNG 16 biți: scriere/citire fără pierdere
 npx tsx tests/depthedit-check.ts # straturi și pensulă (duritate, limite, accentuare)
 node tests/ui-pensula.mjs <dosar> <imagine> # cu `npm run dev` pornit: zoom + pensulă cap-coadă, în Edge ascuns
+node tests/ui-icoana.mjs <dosar> <imagine>  # cu `npm run dev` pornit: harta de icoană cu cele 3 modele, de două ori (a doua din memoria browserului)
 npx tsx tests/aidetail-check.ts  # detaliile din poză peste harta AI
+npx tsx tests/iconrelief-check.ts # harta de icoană: integrare Frankot–Chellappa, pătrate DeepBump, compunere
 npx tsx tests/vcarve-check.ts   # V-carve, buzunar, profil, găuri: exact față de forma analitică
 npx tsx tests/vectorjob-check.ts # lucrările împreună: fund plat cu freză dreaptă, ordine, găuri
 npx tsx tests/rest-check.ts     # finisare de rest: nu taie în relief, pas Z, zone
@@ -144,3 +147,15 @@ npm run dev
 1. Deschideți adresa în **Google Chrome** sau **Microsoft Edge**.
 2. Faceți click pe pictograma de instalare din bara de adrese (lângă steaua de bookmark) sau din meniul cu trei puncte: **„Instalează CNC WoodCraft Studio”**.
 3. O veți avea ca aplicație dedicată în meniul Start / pe Desktop, funcțională chiar și când scoateți cablul de internet!
+
+## Licență și modele AI
+Aplicația este software liber, sub **GNU GPL versiunea 3 sau mai nouă** (fișierul `LICENSE`), pentru că folosește modelul DeepBump, publicat sub GPL-3.0.
+Codul sursă: https://github.com/almeueste777-ops/cnc-woodcraft-pwa
+
+Modelele AI se descarcă în browser la prima folosire (nu sunt incluse în depozit):
+- **Depth Anything V2 small** — Apache-2.0 — onnx-community/depth-anything-v2-small (Hugging Face)
+- **ISNet / DIS** (fp16) — onnx-community/ISNet-ONNX (https://huggingface.co/onnx-community/ISNet-ONNX), etichetat acolo AGPL-3.0
+  (originalul, https://github.com/xuebinqin/DIS, e Apache-2.0; păstrăm eticheta mai strictă). Lucrarea: X. Qin, H. Dai, X. Hu,
+  D.-P. Fan, L. Shao, L. Van Gool, „Highly Accurate Dichotomous Image Segmentation”, ECCV 2022. AGPL-3.0 se poate folosi
+  împreună cu GPL-3.0 (secțiunea 13 a GPL v3); modelul rulează nemodificat, în browserul fiecăruia.
+- **DeepBump** — GPL-3.0 — Hugo Tini, https://github.com/HugoTini/DeepBump (fișierul `deepbump256.onnx`, versiunea fad19ba)

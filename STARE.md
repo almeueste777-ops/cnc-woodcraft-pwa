@@ -44,17 +44,27 @@ toate reparate sau trecute mai jos.
 - Harta AI cere internet la prima folosire (model de pe Hugging Face, motor de pe jsDelivr).
 - Marlin din knowledge.ts neverificat; lecțiile sunt animații, nu filme.
 
-## Ce urmează (cercetare 31.10: model AI gratuit pentru icoane)
-Niciun model gratuit nu face singur harta ca la modelul ei (download (2).jpg); toate „văd” icoana ca un tablou plat.
-Probate pe Gavriil, David, Ilie (ieșirile în scratchpad-ul sesiunii, nu în repo):
-- Utile: **BiRefNet_lite** (MIT, ~170 MB, rulează în browser) separă sfântul de fundal, inclusiv mantia închisă a lui Ilie;
-  **DeepBump** (GPL-3, 27 MB ONNX) scoate din poză un relief sculptat (față, pene, falduri); Depth Anything V2 small rămâne
-  cel mai bun pentru volum.
-- Inutile pe icoane (verificat): Depth Anything V2 base/large, Distill-Any-Depth, Depth Anything 3 small, Depth Pro, Metric3D,
-  MoGe-2 (normale), RMBG-1.4 (taie mantia; și licență necomercială).
-- Neprobate (cer GPU): Marigold (spațiu gratuit HF prs-eth/marigold), Pixel-Perfect Depth, MonoRelief V2 (greutăți negăsite).
-- Calea propusă: mască BiRefNet → volum DA-V2 doar în figură, fundal plat → detaliu DeepBump (sau luminozitate) → chenar ridicat.
-  De hotărât de Otilia: licența GPL-3 a DeepBump (ar obliga codul aplicației la GPL) și ~200 MB descărcați în plus.
+## Harta de icoană din 3 modele (31.10, hotărârea Otiliei: „cea mai bună variantă”)
+- `utils/iconRelief.ts` (calcule: pătrate DeepBump, Frankot–Chellappa, compunere), `iconRelief.worker.ts` (modelele),
+  `iconReliefAi.ts` (legătura), butoanele „Icoană (3 modele)” / „Fotografie (1 model)” în DepthEditor, cu previzualizare
+  și glisoare (detalii sculptate, înălțimea fundalului, cât iese sfântul).
+- Modele: ISNet fp16 (AGPL-3.0, 88 MB, 1 GB memorie, ~20 s) = masca; Depth Anything V2 small (Apache) = volumul; DeepBump (GPL-3,
+  27 MB, de pe raw.githubusercontent, commit fad19ba, ținut în Cache API) = relieful sculptat. Aplicația e acum GPL-3.0+
+  (LICENSE, package.json, README). Totul pe procesor (wasm).
+- De ce nu BiRefNet (măsurat 31.10): la 1024 px depășește 4 GB în motorul din browser (std::bad_alloc); pe placa ei
+  video (AMD RDNA 3) motorul ONNX cere 17 zone de memorie într-un shader, placa dă 16; la 512 px masca e slabă (David:
+  prinde tot arcul); BiRefNet complet la 512 = 473 MB și 3,8 GB. BEN2: 124 s și 4 GB. ISNet a ieșit cel mai bine.
+- După orice eroare firul AI se închide: transformers.js pune rulările la coadă și o eroare strică coada. Motorul ONNX: onnxruntime-web direct, .wasm de pe jsDelivr (nu în site).
+- Probat în browser (Edge ascuns, tests/ui-icoana.mjs, 15/15) pe Gavriil, Ilie, David: prima dată ~60 s cu descărcarea,
+  apoi ~44 s din memoria browserului; fundal plat, glisoare, „Folosește-o ca relief”, fără erori. Pensula: ui-pensula 22/22.
+- Probat în Node cu aceleași calcule pe Gavriil, Ilie, David, un portret, logoul BYZMUSIC: fundal plat, figura separată
+  (Ilie: chenarul nu mai urcă peste trup). De făcut: chenarul ornamental (modelul ei are chenar) — există opțiunea de
+  ramă în ImageControls; neprobat pe telefon (memorie).
+- Cercetarea (inutile pe icoane): DA-V2 base/large, Distill-Any-Depth, DA3 small, Depth Pro, Metric3D, MoGe-2, RMBG-1.4;
+  neprobate (GPU): Marigold, Pixel-Perfect Depth, MonoRelief V2.
+
+## De făcut de Otilia
+- Publicarea pe site: `npm run build` apoi `npm run deploy` (mie îmi e blocată de permisiuni). Codul e deja pe GitHub (main).
 
 ## Cum se pornește
 `npm run dev` (http://localhost:5173). Teste: vezi README („Verificare motor CAM”).
